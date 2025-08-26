@@ -1,5 +1,5 @@
 # Jaskiel_et_al_2025_Tuna_2bRAD
-Here you will find the code associated with the following publication "Genomic Analysis of Population Demographics and Structure of Tropical Tunas in the Central Pacific" by Jaskiel et al., 2025
+Here you will find the code associated with the following publication "Larval Genomics Reveals Cryptic Structure and Climate-Linked Demographic Shifts in Tropical Pacific Tunas" by Jaskiel et al., 2025
 
 See FINAL_2bRAD_workflow.sh for the majority of the bioinformatic analysis pipeline
 

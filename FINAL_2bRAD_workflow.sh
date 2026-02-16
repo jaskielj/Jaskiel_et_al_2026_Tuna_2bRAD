@@ -1,6 +1,6 @@
-# This document contains all the code used to analyze 2bRAD sequencing data for Jaskiel et al., 2025
+# This document contains all the code used to analyze 2bRAD sequencing data for Jaskiel et al., 2026
 # Author: Jacob Jaskiel
-# I have adapted much of what is here from Misha Matz's readme file, found here: https://github.com/z0on/2bRAD_denovo/blob/master/2bRAD_README.sh
+# I have adapted much of what is here at the beginning from Misha Matz's readme file, found here: https://github.com/z0on/2bRAD_denovo/blob/master/2bRAD_README.sh
 
 #================================== Getting Set Up ==========================================
 # (Download scripts from Misha Matz's github: https://github.com/z0on/2bRAD_denovo)
@@ -217,6 +217,50 @@ qsub s2b
 ls *.bam | wc -l  
 # BAM files are the input into various genotype calling / popgen programs, this is the main interim result of the analysis. Archive them.
 
+#Checking fragment length
+>frag_length_by_samp
+nano frag_length_by_samp
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N frag_length_by_samp # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o frag_length_by_samp.qlog # Name the file where to redirect standard output and error
+module load samtools
+for bam in *.bam; do
+    echo "=== $bam ==="
+    samtools stats "$bam" | grep '^RL' | awk '{print $2 "\t" $3}' | sort -n
+    echo ""
+done > all_bams_read_lengths.txt
+
+qsub frag_length_by_samp
+
+#Across all
+samtools cat *.bam | samtools stats - > combined_stats.txt
+
+>frag_length_all
+nano frag_length_all
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N frag_length_all # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 2
+#$ -j y # Join standard output and error to a single file
+#$ -o frag_length_all.qlog # Name the file where to redirect standard output and error
+module load samtools
+for bam in *.bam; do
+    samtools view "$bam" | cut -f10 | awk '{print length($1)}'
+done | sort | uniq -c | sort -n > global_length_histogram.txt
+
+qsub frag_length_all
+
 #===================================== ANGSD "Fuzzy" Genotyping ============================================
 pwd
 /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis
@@ -264,7 +308,7 @@ cat quality.txt
 # I've removed all low quality bams that have a proportion of sites covered at >5x under 0.4; the rest of the bams are in bams_all.csv
 # scp dd.pdf to laptop to look at distribution of base quality scores, fraction of sites in each sample passing coverage thresholds, and fraction of sites passing genotyping rates cutoffs. Use these to guide choices of -minQ,  -minIndDepth and -minInd filters in subsequent ANGSD runs 
 
-#----------------------------------- Tech Rep Detection ------------------------------------------------------
+#----------------------------------- Tech Rep Detection ----------------------------------
 # Looking at all samples including technical replicates to confirm accuracy of sequencing and also help determine filtering thresholds
 # Detecting TRs (note: lower minind makes it easier to determine tech reps, but should be raised for subsequent analyses!)
 
@@ -291,228 +335,203 @@ NSITES=`zcat angsd_TR_all_mi50.mafs.gz | wc -l`
 echo $NSITES
 #31694 sites
 
-#----------------------------------- Tech Rep Selection ------------------------------------------------------ 
-cat quality.txt
-# Now going to look at bams of tech reps to stick with the better of the two (better prop. of sites covered at >5x)
+#Trying TR detection with lower minMaf
+>angsd_TR_all_mi50_minmaf01
+nano angsd_TR_all_mi50_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_TR_all_mi50_minmaf01 # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_TR_all_mi50_minmaf01.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 50 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams -GL 1 $FILTERS $TODO -P 1 -out angsd_TR_all_mi50_minmaf01
 
-#268-G11 & 268-G22: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_CTAC.trim.bt2.bam 0.691597161485455 > Pool_1_Jaskiel_Lane1_S1_L003_R1_001_AGAC.trim.bt2.bam 0.609519935159601
-#281-G1: Pool_9_Jaskiel_Lane2_S9_L004_R1_001_TGGT.trim.bt2.bam 0.57977023819394 > Pool_11_Jaskiel_Lane2_S11_L004_R1_001_AGTG.trim.bt2.bam 0.391114605112956
-#B11: Pool_8_Jaskiel_Lane1_S8_L003_R1_001_TGGT.trim.bt2.bam 0.931344870455589 > Pool_14_Jaskiel_Lane2_S14_L004_R1_001_TGGT.trim.bt2.bam 0.927000482594793 & Pool_15_S15_L002_R1_001_TCAC.trim.bt2.bam 0.900899577667227
-#B12: Pool_14_Jaskiel_Lane2_S14_L004_R1_001_AGAC.trim.bt2.bam 0.827717637896629 & Pool_16_S16_L002_R1_001_TCAC.trim.bt2.bam 0.624755843810437 < Pool_8_Jaskiel_Lane1_S8_L003_R1_001_AGAC.trim.bt2.bam 0.848159228452337
-#B13: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_ACCA.trim.bt2.bam 0.854725311512307 < Pool_8_Jaskiel_Lane1_S8_L003_R1_001_ACCA.trim.bt2.bam 0.90211529814634
-#B15: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_CATC.trim.bt2.bam 0.813947662137126 < Pool_8_Jaskiel_Lane1_S8_L003_R1_001_CATC.trim.bt2.bam 0.877201538905538
-#B16: Pool_8_Jaskiel_Lane1_S8_L003_R1_001_GTGA.trim.bt2.bam 0.914926127204862 > Pool_14_Jaskiel_Lane2_S14_L004_R1_001_GTGA.trim.bt2.bam 0.895720766491337
-#B17: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_TCAG.trim.bt2.bam 0.867398766004564 < Pool_8_Jaskiel_Lane1_S8_L003_R1_001_TCAG.trim.bt2.bam 0.905684095225631
-#B23: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_GACT.trim.bt2.bam 0.87548363026644 < Pool_8_Jaskiel_Lane1_S8_L003_R1_001_GACT.trim.bt2.bam 0.9170245151796
-#Y20: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_TGGT.trim.bt2.bam 0.946176516867479 & Pool_15_S15_L002_R1_001_GACT.trim.bt2.bam 0.856677165067073 < Pool_7_Jaskiel_Lane1_S7_L003_R1_001_TGGT.trim.bt2.bam 0.953680638244451
-#Y21: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_AGAC.trim.bt2.bam 0.80601536208809 < Pool_16_S16_L002_R1_001_GACT.trim.bt2.bam 0.8834173236762 > Pool_7_Jaskiel_Lane1_S7_L003_R1_001_AGAC.trim.bt2.bam 0.844064750630975
-#Y25: Pool_15_Jaskiel_Lane2_S15_L004_R1_001_GTGA.trim.bt2.bam 0.911862499217695 < Pool_7_Jaskiel_Lane1_S7_L003_R1_001_GTGA.trim.bt2.bam 0.923540888153826
-#268-G188: Pool_1_S1_L001_R1_001_TCAG.trim.bt2.bam 0.704454848705502 > Pool_8_S8_L001_R1_001_TCAG.trim.bt2.bam 0.622703106237599
-#268-G66: Pool_2_S2_L001_R1_001_GCTT.trim.bt2.bam 0.721225379223316 > Pool_8_S8_L001_R1_001_GCTT.trim.bt2.bam 0.50270728203949
-#268-G134: Pool_3_S3_L001_R1_001_CTAC.trim.bt2.bam 0.0941717912305791 & Pool_8_S8_L001_R1_001_CTAC.trim.bt2.bam 0.0853656795811435 <- GET RID OF BOTH
-#268-G273: Pool_8_S8_L001_R1_001_TGTC.trim.bt2.bam 0.553758536784817 < Pool_4_S4_L001_R1_001_TGTC.trim.bt2.bam 0.567300116013541
-#274-G50: Pool_5_S5_L001_R1_001_TCAC.trim.bt2.bam 0.584053755985297 > Pool_8_S8_L001_R1_001_TCAC.trim.bt2.bam 0.523210661096703
-#281-G60: Pool_6_S6_L001_R1_001_GACT.trim.bt2.bam 0.898437010071253 > Pool_8_S8_L001_R1_001_GACT.trim.bt2.bam 0.895910531598728
-#281-G203: Pool_8_S8_L001_R1_001_TGGT.trim.bt2.bam 0.750525547478687 > Pool_9_S9_L002_R1_001_TGGT.trim.bt2.bam 0.711435166858636
-#281-G204: Pool_8_S8_L001_R1_001_AGAC.trim.bt2.bam 0.876131909932215 > Pool_9_S9_L002_R1_001_AGAC.trim.bt2.bam 0.683234122250635
-#281-G205: Pool_8_S8_L001_R1_001_ACCA.trim.bt2.bam 0.872370903072389 > Pool_9_S9_L002_R1_001_ACCA.trim.bt2.bam 0.802791897826015
-#281-G206: Pool_8_S8_L001_R1_001_AGTG.trim.bt2.bam 0.822907067849022 > Pool_9_S9_L002_R1_001_AGTG.trim.bt2.bam 0.598817170282787
-#281-G209: Pool_8_S8_L001_R1_001_CATC.trim.bt2.bam 0.763366853793186 < Pool_9_S9_L002_R1_001_CATC.trim.bt2.bam 0.775322809868473
-#281-G214: Pool_8_S8_L001_R1_001_GTGA.trim.bt2.bam 0.719138927986701 > Pool_9_S9_L002_R1_001_GTGA.trim.bt2.bam 0.688016199691803
-#281-G246: Pool_11_S11_L002_R1_001_TGGT.trim.bt2.bam 0.676928858240945 > Pool_22_S6_L001_R1_001_TGGT.trim.bt2.bam 0.652200184339798
-#281-G247: Pool_11_S11_L002_R1_001_AGAC.trim.bt2.bam 0.670736454464685 < Pool_22_S6_L001_R1_001_AGAC.trim.bt2.bam 0.717780184049497
-#281-G248: Pool_11_S11_L002_R1_001_ACCA.trim.bt2.bam 0.862643696850512 > Pool_22_S6_L001_R1_001_ACCA.trim.bt2.bam 0.854173542985569
-#281-G249: Pool_22_S6_L001_R1_001_AGTG.trim.bt2.bam 0.816192763204646 < Pool_11_S11_L002_R1_001_AGTG.trim.bt2.bam 0.85862891664411
-#281-G250: Pool_11_S11_L002_R1_001_CATC.trim.bt2.bam 0.692983633333102 > Pool_22_S6_L001_R1_001_CATC.trim.bt2.bam 0.48088665951395
-#281-G251: Pool_11_S11_L002_R1_001_GTGA.trim.bt2.bam 0.757257364750595 > Pool_22_S6_L001_R1_001_GTGA.trim.bt2.bam 0.688183311636949
-#281-G233: Pool_10_S10_L002_R1_001_ACCA.trim.bt2.bam 0.647753676571331 < Pool_16_S16_L002_R1_001_ACCA.trim.bt2.bam 0.656886239812877
-#281-G237: Pool_10_S10_L002_R1_001_CATC.trim.bt2.bam 0.894635823913688 > Pool_16_S16_L002_R1_001_CATC.trim.bt2.bam 0.88273364801248
-#281-G252: Pool_11_S11_L002_R1_001_TCAG.trim.bt2.bam 0.693736108815314 < Pool_16_S16_L002_R1_001_TCAG.trim.bt2.bam 0.780715479631195
-#268-G194: Pool_13_S13_L002_R1_001_CTAC.trim.bt2.bam 0.627694653765432 > Pool_16_S16_L002_R1_001_CTAC.trim.bt2.bam 0.454416585433252
-#268-G248: Pool_14_S14_L002_R1_001_TGTC.trim.bt2.bam 0.825628377211454 > Pool_16_S16_L002_R1_001_TGTC.trim.bt2.bam 0.765302837931228
-#P7: Pool_22_S6_L001_R1_001_TCAG.trim.bt2.bam 0.122572714427212 > Pool_23_S7_L001_R1_001_TCAG.trim.bt2.bam 0.118404084287964 <-- GET RID OF BOTH?
-#P8: Pool_22_S6_L001_R1_001_GCTT.trim.bt2.bam 0.51087003160051 > Pool_23_S7_L001_R1_001_GCTT.trim.bt2.bam 0.499552676343243
-#P9: Pool_22_S6_L001_R1_001_CTAC.trim.bt2.bam 0.876802860530831 < Pool_23_S7_L001_R1_001_CTAC.trim.bt2.bam 0.884488588314413
-#P10: Pool_22_S6_L001_R1_001_TGTC.trim.bt2.bam 0.83930787517588 < Pool_23_S7_L001_R1_001_TGTC.trim.bt2.bam 0.850931171573292
-#P11: Pool_22_S6_L001_R1_001_TCAC.trim.bt2.bam 0.851163776437385 < Pool_23_S7_L001_R1_001_TCAC.trim.bt2.bam 0.858114408882457
-#P12: Pool_22_S6_L001_R1_001_GACT.trim.bt2.bam 0.839345068088488 < Pool_23_S7_L001_R1_001_GACT.trim.bt2.bam 0.851070545749508
-#261-G21: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_AGAC.trim.bt2.bam 0.70846361862503 > Pool_15_S15_L002_R1_001_TGGT.trim.bt2.bam 0.595432006996303
-#261-G22: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_ACCA.trim.bt2.bam 0.838460423436809 > Pool_16_S16_L002_R1_001_TGGT.trim.bt2.bam 0.709792651097786
-#261-G23: Pool_4_Jaskiel_Lane1_S4_L003_R1_001_TGGT.trim.bt2.bam 0.942801048063264 > Pool_15_S15_L002_R1_001_AGAC.trim.bt2.bam 0.894785835500684
-#268-G6: Pool_9_Jaskiel_Lane2_S9_L004_R1_001_TCAG.trim.bt2.bam 0.71353266553661 < Pool_15_S15_L002_R1_001_ACCA.trim.bt2.bam 0.727858500775601
-#268-G18: Pool_15_S15_L002_R1_001_AGTG.trim.bt2.bam 0.745570184650985 < Pool_2_Jaskiel_Lane1_S2_L003_R1_001_TGGT.trim.bt2.bam 0.855701713386485
-#274-G6: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_TGGT.trim.bt2.bam 0.73431748641204 > Pool_15_S15_L002_R1_001_CATC.trim.bt2.bam 0.649633236724969
-#274-G12: Pool_1_Jaskiel_Lane1_S1_L003_R1_001_AGTG.trim.bt2.bam 0.493800510813582 < Pool_15_S15_L002_R1_001_GTGA.trim.bt2.bam 0.753822781352698
-#281-G6: Pool_15_S15_L002_R1_001_TCAG.trim.bt2.bam 0.252977242495217 < Pool_11_Jaskiel_Lane2_S11_L004_R1_001_CTAC.trim.bt2.bam 0.47914619092284
-#281-G22: Pool_15_S15_L002_R1_001_GCTT.trim.bt2.bam 0.522390769026508 < Pool_4_Jaskiel_Lane1_S4_L003_R1_001_CTAC.trim.bt2.bam 0.523332932692992
-#287-G8: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_GCTT.trim.bt2.bam 0.548975954884898 > Pool_15_S15_L002_R1_001_CTAC.trim.bt2.bam 0.463369865699923
-#287-G13: Pool_15_S15_L002_R1_001_TGTC.trim.bt2.bam 0.422215126537785 < Pool_9_Jaskiel_Lane2_S9_L004_R1_001_TCAC.trim.bt2.bam 0.454008351855823
-#261-G26: Pool_10_Jaskiel_Lane2_S10_L004_R1_001_CATC.trim.bt2.bam 0.779633978348889 < Pool_16_S16_L002_R1_001_AGAC.trim.bt2.bam 0.783776966104911
-#268-G21: Pool_16_S16_L002_R1_001_AGTG.trim.bt2.bam 0.700968726402163 < Pool_1_Jaskiel_Lane1_S1_L003_R1_001_TGGT.trim.bt2.bam 0.729453258440989
-#274-G14: Pool_4_Jaskiel_Lane1_S4_L003_R1_001_GTGA.trim.bt2.bam 0.807561496865569 > Pool_16_S16_L002_R1_001_GTGA.trim.bt2.bam 0.747946642944272
-#281-G23: Pool_16_S16_L002_R1_001_GCTT.trim.bt2.bam 0.694371029455565 > Pool_2_Jaskiel_Lane1_S2_L003_R1_001_AGAC.trim.bt2.bam 0.612409304115472
-#268-G17 & 268-G266: Pool_14_Jaskiel_Lane2_S14_L004_R1_001_TCAC.trim.bt2.bam 0.269579754496615 < Pool_4_S4_L001_R1_001_CTAC.trim.bt2.bam 0.867586087916686
-#268-G14 & 268-G251: Pool_14_Jaskiel_Lane2_S14_L004_R1_001_GCTT.trim.bt2.bam 0.278375903853978 < Pool_14_S14_L002_R1_001_TCAC.trim.bt2.bam 0.881108758519965
-#268-G13 & 268-G18: Pool_14_Jaskiel_Lane2_S14_L004_R1_001_TGTC.trim.bt2.bam 0.613516556461277 < Pool_2_Jaskiel_Lane1_S2_L003_R1_001_TGGT.trim.bt2.bam 0.855701713386485
-#268-G16 & 268-G261: Pool_13_Jaskiel_Lane2_S13_L004_R1_001_TGGT.trim.bt2.bam 0.541977248171747 < Pool_4_S4_L001_R1_001_GCTT.trim.bt2.bam 0.830989439241658
+qsub angsd_TR_all_mi50_minmaf01
 
-# I've removed all low quality bams that are under 0.4 as well as TRs; the rest of the bams are in bams_all.csv
+NSITES=`zcat angsd_TR_all_mi50_minmaf01.mafs.gz | wc -l` 
+echo $NSITES
+#84566 vs 31694 sites with minMaf = 0.05
 
-#Also removing 3 weird "noisy" samples, 268-G273, 281-G48, and 287-G53 that seem to be poor quality and cause issues in ordination
+>angsd_TR_all_mi50_minmaf02
+nano angsd_TR_all_mi50_minmaf02
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_TR_all_mi50_minmaf02 # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_TR_all_mi50_minmaf02.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 50 -snp_pval 1e-5 -minMaf 0.02"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams -GL 1 $FILTERS $TODO -P 1 -out angsd_TR_all_mi50_minmaf02
+
+qsub angsd_TR_all_mi50_minmaf02
+
+NSITES=`zcat angsd_TR_all_mi50_minmaf02.mafs.gz | wc -l` 
+echo $NSITES
+#57285 vs 31694 sites with minMaf = 0.05
+
+#----------------------------------- Merging Tech Reps ------------------------------------------------------ 
+#Also removing 3 weird "noisy" samples, 268-G273, 281-G48, and 287-G53 that seem to be poor quality/coverage and cause issues in ordination
 #Pool_4_S4_L001_R1_001_TGTC.trim.bt2.bam, Pool_2_Jaskiel_Lane1_S2_L003_R1_001_GTGA.trim.bt2.bam, Pool_12_S12_L002_R1_001_TGTC.trim.bt2.bam
 
-# - - - - - - - - - - - - - - - - - All samples, no TRs or low coverage samples - - - - - - - - - - - - - - - - - -
-#Filtering out sites in linkage (can drive population structure)
+#Merging bams, indexing merged bams
+>merge_bams
+nano merge_bams
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N merge_bams # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o merge_bams.qlog # Name the file where to redirect standard output and error
+module load samtools
+set -euo pipefail
+
+while IFS=$'\t' read -r sample bam1 bam2 bam3; do
+  bams=()
+  bams+=("$bam1")
+  bams+=("$bam2")
+  [[ -n "$bam3" ]] && bams+=("$bam3")
+
+  for f in "${bams[@]}"; do
+    if [[ ! -r "$f" ]]; then
+      echo "ERROR: BAM file $f for sample $sample not found or not readable" >&2
+      exit 1
+    fi
+  done
+
+  out="${sample}.merged.bam"
+  echo "Merging ${#bams[@]} replicates for $sample → $out"
+  samtools merge "$out" "${bams[@]}"
+  samtools index "$out"
+
+done < bams_to_merge.txt
+
+qsub merge_bams
+
+#Checking to see it worked
+samtools idxstats Pool_10_Jaskiel_Lane2_S10_L004_R1_001_CTAC.trim.bt2.bam | awk '{sum+=$3+$4} END{print sum}' #740546
+samtools idxstats Pool_1_Jaskiel_Lane1_S1_L003_R1_001_AGAC.trim.bt2.bam | awk '{sum+=$3+$4} END{print sum}' #441491
+samtools idxstats 268-G11.merged.bam | awk '{sum+=$3+$4} END{print sum}' #1182037 
+#looks good
+
+#-------------------- ANGSD with all samples (merged bams), no Auxis --------------------
+#start by filtering out sites to work with
 
 # filtering sites to work on - use only filters that do not distort allele frequency
 # set minInd to 75-90% of the total number fo individuals in the project
 # if you are doing any other RAD than 2bRAD or GBS, remove '-sb_pval 1e-5' from FILTERS
 
->angsd_AllSites
-nano angsd_AllSites
+>angsd_AllSites_merged
+nano angsd_AllSites_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_AllSites # job name, anything you want
+#$ -N angsd_AllSites_merged # job name, anything you want
 #$ -l h_rt=24:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_AllSites.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_AllSites_merged.qlog # Name the file where to redirect standard output and error
 module load angsd
-FILTERS="-uniqueOnly 1 -remove_bads 1  -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 289"
+FILTERS="-uniqueOnly 1 -remove_bads 1  -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 288"
 TODO="-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2 -doGeno 8"
-angsd -b bams_all_noTR -GL 1 $FILTERS $TODO -P 1 -out AllSites
+angsd -b bams_all_noTR_merged -GL 1 $FILTERS $TODO -P 1 -out AllSites_merged
 
-qsub angsd_AllSites
+qsub angsd_AllSites_merged
 
-NSITES=`zcat AllSites.mafs.gz | wc -l` 
+NSITES=`zcat AllSites_merged.mafs.gz | wc -l` 
 echo $NSITES
-#704405
+#715571 vs 704405 before merging bams from technical replicates
 
 # Collecting and indexing filter-passing sites
-zcat AllSites.mafs.gz | cut -f 1,2 | tail -n +2 >AllSites
+zcat AllSites_merged.mafs.gz | cut -f 1,2 | tail -n +2 >AllSites_merged
 
->indexing_AllSites
-nano indexing_AllSites
+>indexing_AllSites_merged
+nano indexing_AllSites_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N indexing_AllSites # job name, anything you want
+#$ -N indexing_AllSites_merged # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o indexing_AllSites.qlog # Name the file where to redirect standard output and error
+#$ -o indexing_AllSites_merged.qlog # Name the file where to redirect standard output and error
 module load angsd
-angsd sites index AllSites
+angsd sites index AllSites_merged
 
-qsub indexing_AllSites
+qsub indexing_AllSites_merged
 
-zcat AllSites.mafs.gz | tail -n +2 | cut -f 1,2 > mc1.sites
-
-##Removing linked sites##
-#Run as a job
->ngsld_unlinked_5kb
-nano ngsld_unlinked_5kb
+#Running ANGSD to produce PCA/dendrogram for species validation, input to admixture analyses
+#minind 285 (80% of 356) minQ 25 w/ -setMinDepthInd 5
+#With linked sites
+>angsd_all_mid5_merged_noaux
+nano angsd_all_mid5_merged_noaux
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N ngsld_unlinked_5kb # job name, anything you want
+#$ -N angsd_all_mid5_merged_noaux # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o ngsld_unlinked_5kb.qlog # Name the file where to redirect standard output and error
-module load ngsld
-NS=`zcat AllSites.geno.gz| wc -l`
-NB=`cat bams_all_noTR | wc -l`
-ngsLD --geno AllSites.geno.gz --probs 1 --n_ind $NB --n_sites $NS --max_kb_dist 5 --pos AllSites --out AllSites_5kb.LD --n_threads 1 --extend_out 1 --min_maf 0.05
-
-qsub ngsld_unlinked_5kb
-
->prune_LD_5kb
-nano prune_LD_5kb
-#!/bin/bash -l
-#$ -V # inherit the submission environment
-#$ -cwd # start job in submission directory
-#$ -N prune_LD_5kb # job name, anything you want
-#$ -l h_rt=12:00:00 #maximum run time
-#$ -M jaskielj@bu.edu #your email
-#$ -m bea
-#$ -pe omp 1
-#$ -j y # Join standard output and error to a single file
-#$ -o prune_LD_5kb.qlog # Name the file where to redirect standard output and error
-module load perl
-module load ngsld
-cat AllSites_5kb.LD | cut -f 1,3,5- | perl /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/prune_graph.pl --max_kb_dist 5 --min_weight 0.2 --weight_type a > 0.2_unlinked
-
-qsub prune_LD_5kb
-
-#make tab delimited and remove missing lines
-sed 's/:/\t/g' 0.2_unlinked > 0.2_unlinked.sites
-awk  '$2!=""' 0.2_unlinked.sites > 0.2_unlinked.sites.tmp; mv 0.2_unlinked.sites.tmp 0.2_unlinked.sites
-sort -k1 0.2_unlinked.sites > 0.2_unlinked.sites_2.tmp; mv 0.2_unlinked.sites_2.tmp 0.2_unlinked.sites
-
-angsd sites index 0.2_unlinked.sites
-
->final_sites_5kb
-nano final_sites_5kb
-#!/bin/bash -l
-#$ -V # inherit the submission environment
-#$ -cwd # start job in submission directory
-#$ -N final_sites_5kb # job name, anything you want
-#$ -l h_rt=12:00:00 #maximum run time
-#$ -M jaskielj@bu.edu #your email
-#$ -m bea
-#$ -pe omp 1
-#$ -j y # Join standard output and error to a single file
-#$ -o final_sites_5kb.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_all_mid5_merged_noaux.qlog # Name the file where to redirect standard output and error
 module load angsd
-FILTERS="-uniqueOnly 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -hetbias_pval 1e-5 -minInd 289 -sb_pval 1e-5"
-TODO='-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2'
-angsd -sites 0.2_unlinked.sites -b bams_all_noTR -GL 1 $FILTERS $TODO -P 1 -out 0.2_unlinked.sites
-
-qsub final_sites_5kb
-
-NSITES=`zcat 0.2_unlinked.sites.mafs.gz | wc -l`
-echo $NSITES
-#197052
-
-zcat 0.2_unlinked.sites.mafs.gz | cut -f 1,2 | tail -n +2 > finalsites_0.2_unlinked
-angsd sites index finalsites_0.2_unlinked
-
-# minind 289 (80% of 361) minQ 25 w/ -setMinDepthInd 5
-#Without linked sites
->angsd_all_mid5_noLD
-nano angsd_all_mid5_noLD
-
-#!/bin/bash -l
-#$ -V # inherit the submission environment
-#$ -cwd # start job in submission directory
-#$ -N angsd_all_mid5_noLD # job name, anything you want
-#$ -l h_rt=12:00:00 #maximum run time
-#$ -M jaskielj@bu.edu #your email
-#$ -m bea
-#$ -pe omp 1
-#$ -j y # Join standard output and error to a single file
-#$ -o angsd_all_mid5_noLD.qlog # Name the file where to redirect standard output and error
-
-module load angsd
-FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 289 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 285 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
 TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
-angsd -b bams_all_noTR -sites finalsites_0.2_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_all_mid5_noLD
+angsd -b bams_all_no_aux_merged -sites AllSites_merged -GL 1 $FILTERS $TODO -P 1 -out angsd_all_mid5_merged_noaux
 
-qsub angsd_all_mid5_noLD
+qsub angsd_all_mid5_merged_noaux
 
-NSITES=`zcat angsd_all_mid5_noLD.mafs.gz | wc -l` 
+NSITES=`zcat angsd_all_mid5_merged_noaux.mafs.gz | wc -l` 
 echo $NSITES
-#595 sites
+#2539 vs 2314 w/ LD sites filtered
 
-#================================= NGSadmix and ADMIXTURE ========================================
+#minind 285 (80% of 356) minQ 25 w/ -setMinDepthInd 5, minmaf 0.01
+#With linked sites
+>angsd_all_mid5_merged_noaux_minmaf01
+nano angsd_all_mid5_merged_noaux_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_all_mid5_merged_noaux_minmaf01 # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_all_mid5_merged_noaux_minmaf01.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 285 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_all_no_aux_merged -sites AllSites_merged -GL 1 $FILTERS $TODO -P 1 -out angsd_all_mid5_merged_noaux_minmaf01
+
+qsub angsd_all_mid5_merged_noaux_minmaf01
+
+NSITES=`zcat angsd_all_mid5_merged_noaux_minmaf01.mafs.gz | wc -l` 
+echo $NSITES
+#5821 vs 5375 w/ LD sites filtered
+
+#================================= NGSadmix and ADMIXTURE (all species) ========================================
 pwd
 /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis
 
@@ -521,25 +540,25 @@ wget popgen.dk/software/download/NGSadmix/ngsadmix32.cpp
 g++ ngsadmix32.cpp -O3 -lpthread -lz -o NGSadmix
 
 # --- All taxa no technical replicates or genotyping duplicates (normal filters)
-# NgsAdmix for K from 1 to 10 : do not run if the dataset contains clones or genotyping replicates!
->ngsadmix_all_mid5_noLD
-nano ngsadmix_all_mid5_noLD
+# NgsAdmix for K from 1 to 7 : do not run if the dataset contains clones or genotyping replicates!
+>ngsadmix_all_mid5_merged_noaux
+nano ngsadmix_all_mid5_merged_noaux
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N ngsadmix_all_mid5_noLD # job name, anything you want
+#$ -N ngsadmix_all_mid5_merged_noaux # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o ngsadmix_all_mid5_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o ngsadmix_all_mid5_merged_noaux.qlog # Name the file where to redirect standard output and error
 for K in `seq 1 10` ;
 do
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_all_mid5_noLD.beagle.gz -K $K -P 1 -o ${K};
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_all_mid5_merged_noaux.beagle.gz -K $K -P 1 -o /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/ngsadmix_all_mid5_merged_noaux_k${K};
 done
 
-qsub ngsadmix_all_mid5_noLD
+qsub ngsadmix_all_mid5_merged_noaux
 
 # scp *qopt files to local machine, use admixturePlotting_v5.R to plot
 
@@ -547,2222 +566,3637 @@ qsub ngsadmix_all_mid5_noLD
 #BCF -> VCF
 module load htslib/1.16
 module load bcftools/1.16
-bcftools convert -O v -o angsd_all_mid5_noLD.vcf angsd_all_mid5_noLD.bcf
+bcftools convert -O v -o angsd_all_mid5_merged_noaux.vcf angsd_all_mid5_merged_noaux.bcf
 
 module load admixture/1.3.0
 module load plink/1.90b6.4
 
-#all_mid5_noLD
-plink --vcf angsd_all_mid5_noLD.vcf --make-bed --allow-extra-chr 0 --out angsd_all_mid5_noLD --const-fid 0
-for K in `seq 1 10`; \
-do admixture --cv angsd_all_mid5_noLD.bed $K | tee myresult_all_mid5_noLD_${K}.out; done
-
-# use this to check K of least CV error:
-grep -h CV myresult_all_mid5_noLD_*.out
-
-CV error (K=10): 0.22820
-CV error (K=1): 0.90770
-CV error (K=2): 0.25892
-CV error (K=3): 0.26050
-CV error (K=4): 0.22362
-CV error (K=5): 0.22691
-CV error (K=6): 0.21598 <- lowest
-CV error (K=7): 0.21963
-CV error (K=8): 0.21896
-CV error (K=9): 0.22520
+#all_mid5_noLD_merged_noaux
+plink --vcf angsd_all_mid5_merged_noaux.vcf --make-bed --allow-extra-chr 0 --out angsd_all_mid5_merged_noaux --const-fid 0
 
 #Trying multiple replicates per K and Evanno method for better confidence in K
+>admixture_all_mid5_merged_noaux
+nano admixture_all_mid5_merged_noaux
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N admixture_all_mid5_merged_noaux # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o admixture_all_mid5_merged_noaux.qlog # Name the file where to redirect standard output and error
+module load admixture/1.3.0
 for K in $(seq 1 10); do
   for REP in $(seq 1 10); do
     SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
-    admixture --cv=10 --seed=$SEED angsd_all_mid5_noLD.bed $K \
-      | tee myresult_all_mid5_noLD_K${K}_rep${REP}.out
+    admixture --cv=10 --seed=$SEED angsd_all_mid5_merged_noaux.bed $K \
+      | tee /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/myresult_all_mid5_merged_noaux_K${K}_rep${REP}.out
   done
 done
-grep "CV error" myresult_all_mid5_noLD_K*_rep*.out > admixture_cv_errors_all_noLD_fold.txt
-#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
+grep "CV error" /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/myresult_all_mid5_merged_noaux_K*_rep*.out > /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/admixture_cv_errors_all_merged_noaux.txt
 
-#Skipjack
->ngsadmix_skj_mid5_noLD
-nano ngsadmix_skj_mid5_noLD
+qsub admixture_all_mid5_merged_noaux
+
+# --- All taxa no technical replicates or genotyping duplicates (normal filters)
+# NgsAdmix for K from 1 to 7 : do not run if the dataset contains clones or genotyping replicates!
+>ngsadmix_all_mid5_merged_noaux_minmaf01
+nano ngsadmix_all_mid5_merged_noaux_minmaf01
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N ngsadmix_skj_mid5_noLD # job name, anything you want
+#$ -N ngsadmix_all_mid5_merged_noaux_minmaf01 # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o ngsadmix_skj_mid5_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o ngsadmix_all_mid5_merged_noaux_minmaf01.qlog # Name the file where to redirect standard output and error
 for K in `seq 1 10` ;
 do
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_skj_mid5_noLD.beagle.gz -K $K -P 1 -o ngsadmix_skj_mid5_noLD_k${K};
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_all_mid5_merged_noaux_minmaf01.beagle.gz -K $K -P 1 -o /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/ngsadmix_all_mid5_merged_noaux_minmaf01_k${K};
 done
 
-qsub ngsadmix_skj_mid5_noLD
+qsub ngsadmix_all_mid5_merged_noaux_minmaf01
 
 # scp *qopt files to local machine, use admixturePlotting_v5.R to plot
 
-bcftools convert -O v -o angsd_skj_mid5_noLD.vcf angsd_skj_mid5_noLD.bcf
-plink --vcf angsd_skj_mid5_noLD.vcf --make-bed --allow-extra-chr 0 --out angsd_skj_mid5_noLD --const-fid 0
-for K in `seq 1 10`; \
-do admixture --cv angsd_skj_mid5_noLD.bed $K | tee myresult_skj_mid5_noLD_${K}.out; done
+##Trying ADMIXTURE to find optimal K for all taxa
+#BCF -> VCF
+module load htslib/1.16
+module load bcftools/1.16
+bcftools convert -O v -o angsd_all_mid5_merged_noaux_minmaf01.vcf angsd_all_mid5_merged_noaux_minmaf01.bcf
 
-# use this to check K of least CV error:
-grep -h CV myresult_skj_mid5_noLD_*.out
+module load admixture/1.3.0
+module load plink/1.90b6.4
 
-CV error (K=10): 0.58352
-CV error (K=1): 0.50759 <- lowest
-CV error (K=2): 0.52303
-CV error (K=3): 0.53507
-CV error (K=4): 0.54495
-CV error (K=5): 0.54791
-CV error (K=6): 0.55230
-CV error (K=7): 0.56591
-CV error (K=8): 0.57169
-CV error (K=9): 0.57592
+#all_mid5_noLD_merged_noaux
+plink --vcf angsd_all_mid5_merged_noaux_minmaf01.vcf --make-bed --allow-extra-chr 0 --out angsd_all_mid5_merged_noaux_minmaf01 --const-fid 0
 
 #Trying multiple replicates per K and Evanno method for better confidence in K
-for K in $(seq 1 5); do
-  for REP in $(seq 1 10); do
-    SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
-    admixture --cv=10 --seed=$SEED angsd_skj_mid5_noLD.bed $K \
-      | tee myresult_skj_mid5_noLD_K${K}_rep${REP}.out
-  done
-done
-
-grep "CV error" myresult_skj_mid5_noLD_K*_rep*.out > admixture_cv_errors_skj_noLD_fold.txt
-#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
-
-#Yellowfin
->ngsadmix_yft_mid5_noLD
-nano ngsadmix_yft_mid5_noLD
+>admixture_all_mid5_merged_noaux_minmaf01
+nano admixture_all_mid5_merged_noaux_minmaf01
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N ngsadmix_yft_mid5_noLD # job name, anything you want
+#$ -N admixture_all_mid5_merged_noaux_minmaf01 # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o ngsadmix_yft_mid5_noLD.qlog # Name the file where to redirect standard output and error
-for K in `seq 1 10` ;
-do
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_yft_mid5_noLD.beagle.gz -K $K -P 1 -o ngsadmix_yft_mid5_noLD_k${K};
-done
-
-qsub ngsadmix_yft_mid5_noLD
-
-# scp *qopt files to local machine, use admixturePlotting_v5.R to plot
-
-bcftools convert -O v -o angsd_yft_mid5_noLD.vcf angsd_yft_mid5_noLD.bcf
-plink --vcf angsd_yft_mid5_noLD.vcf --make-bed --allow-extra-chr 0 --out angsd_yft_mid5_noLD --const-fid 0
-for K in `seq 1 10`; \
-do admixture --cv angsd_yft_mid5_noLD.bed $K | tee myresult_yft_mid5_noLD_${K}.out; done
-
-# use this to check K of least CV error:
-grep -h CV myresult_yft_mid5_noLD_*.out
-
-CV error (K=10): 0.58150
-CV error (K=1): 0.61330
-CV error (K=2): 0.40382 <- lowest
-CV error (K=3): 0.42535
-CV error (K=4): 0.44700
-CV error (K=5): 0.46651
-CV error (K=6): 0.47996
-CV error (K=7): 0.50965
-CV error (K=8): 0.52031
-CV error (K=9): 0.54739
-
-#Trying multiple replicates per K and Evanno method for better confidence in K
-for K in $(seq 1 5); do
+#$ -o admixture_all_mid5_merged_noaux_minmaf01.qlog # Name the file where to redirect standard output and error
+module load admixture/1.3.0
+for K in $(seq 1 10); do
   for REP in $(seq 1 10); do
     SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
-    admixture --cv=10 --seed=$SEED angsd_yft_mid5_noLD.bed $K \
-      | tee myresult_yft_mid5_noLD_K${K}_rep${REP}.out
+    admixture --cv=10 --seed=$SEED angsd_all_mid5_merged_noaux_minmaf01.bed $K \
+      | tee /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/myresult_all_mid5_merged_noaux_minmaf01_K${K}_rep${REP}.out
   done
 done
+grep "CV error" /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/myresult_all_mid5_merged_noaux_minmaf01_K*_rep*.out > /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_all_output_files/admixture_cv_errors_all_merged_noaux_minmaf01.txt
 
-grep "CV error" myresult_yft_mid5_noLD_K*_rep*.out > admixture_cv_errors_yft_noLD_fold.txt
-#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
-
-#Bigeye
->ngsadmix_bet_mid5_noLD
-nano ngsadmix_bet_mid5_noLD
-#!/bin/bash -l
-#$ -V # inherit the submission environment
-#$ -cwd # start job in submission directory
-#$ -N ngsadmix_bet_mid5_noLD # job name, anything you want
-#$ -l h_rt=12:00:00 #maximum run time
-#$ -M jaskielj@bu.edu #your email
-#$ -m bea
-#$ -pe omp 1
-#$ -j y # Join standard output and error to a single file
-#$ -o ngsadmix_bet_mid5_noLD.qlog # Name the file where to redirect standard output and error
-for K in `seq 1 10` ;
-do
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_bet_mid5_noLD.beagle.gz -K $K -P 1 -o ngsadmix_bet_mid5_noLD_k${K};
-done
-
-qsub ngsadmix_bet_mid5_noLD
-
-# scp *qopt files to local machine, use admixturePlotting_v5.R to plot
-
-bcftools convert -O v -o angsd_bet_mid5_noLD.vcf angsd_bet_mid5_noLD.bcf
-plink --vcf angsd_bet_mid5_noLD.vcf --make-bed --allow-extra-chr 0 --out angsd_bet_mid5_noLD --const-fid 0
-for K in `seq 1 10`; \
-do admixture --cv angsd_bet_mid5_noLD.bed $K | tee myresult_bet_mid5_noLD_${K}.out; done
-
-# use this to check K of least CV error:
-grep -h CV myresult_bet_mid5_noLD_*.out
-
-CV error (K=10): 1.08708
-CV error (K=1): 0.52436 <- lowest
-CV error (K=2): 0.57006
-CV error (K=3): 0.64617
-CV error (K=4): 0.68057
-CV error (K=5): 0.75060
-CV error (K=6): 0.78820
-CV error (K=7): 0.86285
-CV error (K=8): 0.90836
-CV error (K=9): 1.00806
-
-#Trying multiple replicates per K and Evanno method for better confidence in K
-for K in $(seq 1 5); do
-  for REP in $(seq 1 10); do
-    SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
-    admixture --cv=10 --seed=$SEED angsd_bet_mid5_noLD.bed $K \
-      | tee myresult_bet_mid5_noLD_K${K}_rep${REP}.out
-  done
-done
-
-grep "CV error" myresult_bet_mid5_noLD_K*_rep*.out > admixture_cv_errors_bet_noLD_fold.txt
-#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
+qsub admixture_all_mid5_merged_noaux_minmaf01
 
 #================================= Demographic Analyses ========================================
 ## SFS work with individual species groups
+#With Linked Sites still
 #Skipjack (203 individuals, so 80% is 162)
->sfs_skj_dem
-nano sfs_skj_dem
+>sfs_skj_dem_merged_LD
+nano sfs_skj_dem_merged_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_dem # job name, anything you want
+#$ -N sfs_skj_dem_merged_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
-#$ -pe omp 2
+#$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_dem.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_dem_merged_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj -GL 1 -P 2 -minInd 162 $TODO -out skj_dem
+angsd -sites AllSites_skj_merged -b bams_skj_merged -GL 1 -P 1 -minInd 162 $TODO -out skj_dem_merged_LD
 
-qsub sfs_skj_dem
+qsub sfs_skj_dem_merged_LD
 
 #Yellowfin 
->sfs_yft_dem
-nano sfs_yft_dem
+>sfs_yft_dem_merged_LD
+nano sfs_yft_dem_merged_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_dem # job name, anything you want
+#$ -N sfs_yft_dem_merged_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
-#$ -pe omp 2
+#$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_dem.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_dem_merged_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft -GL 1 -P 2 -minInd 77 $TODO -out yft_dem
+angsd -sites AllSites_yft_merged -b bams_yft_merged -GL 1 -P 1 -minInd 77 $TODO -out yft_dem_merged_LD
 
-qsub sfs_yft_dem
+qsub sfs_yft_dem_merged_LD
 
 #Bigeye
->sfs_bet_dem
-nano sfs_bet_dem
+>sfs_bet_dem_merged_LD
+nano sfs_bet_dem_merged_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_dem # job name, anything you want
+#$ -N sfs_bet_dem_merged_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_dem.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_dem_merged_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet -GL 1 -P 1 -minInd 46 $TODO -out bet_dem
+angsd -sites AllSites_bet_merged -b bams_bet_merged -GL 1 -P 1 -minInd 46 $TODO -out bet_dem_merged_LD
 
-qsub sfs_bet_dem
+qsub sfs_bet_dem_merged_LD
 
 # writing down 2d-SFS priors - SKJ vs YFT 
->sfs_skj_yft_dem_folded
-nano sfs_skj_yft_dem_folded
+>sfs_skj_yft_merged_dem_folded_LD
+nano sfs_skj_yft_merged_dem_folded_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_yft_dem_folded # job name, anything you want
+#$ -N sfs_skj_yft_merged_dem_folded_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_yft_dem_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_yft_merged_dem_folded_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_dem.saf.idx yft_dem.saf.idx -P 1 -fold 1 > skj_yft_dem_folded.sfs ; realSFS fst index skj_dem.saf.idx yft_dem.saf.idx -sfs skj_yft_dem_folded.sfs -fstout skj_yft_dem_folded
+realSFS skj_dem_merged_LD.saf.idx yft_dem_merged_LD.saf.idx -P 1 -fold 1 > skj_yft_merged_dem_folded_LD.sfs ; realSFS fst index skj_dem_merged_LD.saf.idx yft_dem_merged_LD.saf.idx -sfs skj_yft_merged_dem_folded_LD.sfs -fstout skj_yft_merged_dem_folded_LD
 
-qsub sfs_skj_yft_dem_folded
+qsub sfs_skj_yft_merged_dem_folded_LD
 
 # global Fst between populations (after LD pruning and folding)
-realSFS fst stats skj_yft_dem_folded.fst.idx
+realSFS fst stats skj_yft_merged_dem_folded_LD.fst.idx
 #output:
-FST.Unweight[nObs:142094]:0.007883 Fst.Weight:0.362471
+FST.Unweight[nObs:655893]:0.004028 Fst.Weight:0.249107
 
 # The difference between unweighted and weighted values is averaging versus ratio of sums method. 
 # The weighted value is derived from the ratio of the separate per-locus sums of numerator and denominator values, 
 # while the unweighted value is the average of per-locus values. [If that is unclear: weighted is sum(a)/sum(a+b), while unweighted is average(a/(a+b))].
 
 # writing down 2d-SFS priors - SKJ vs BET 
->sfs_skj_bet_dem_folded
-nano sfs_skj_bet_dem_folded
+>sfs_skj_bet_merged_dem_folded_LD
+nano sfs_skj_bet_merged_dem_folded_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_bet_dem_folded # job name, anything you want
+#$ -N sfs_skj_bet_merged_dem_folded_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_bet_dem_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_bet_merged_dem_folded_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_dem.saf.idx bet_dem.saf.idx -P 1 -fold 1 > skj_bet_dem_folded.sfs ; realSFS fst index skj_dem.saf.idx bet_dem.saf.idx -sfs skj_bet_dem_folded.sfs -fstout skj_bet_dem_folded
+realSFS skj_dem_merged_LD.saf.idx bet_dem_merged_LD.saf.idx -P 1 -fold 1 > skj_bet_merged_dem_folded_LD.sfs ; realSFS fst index skj_dem_merged_LD.saf.idx bet_dem_merged_LD.saf.idx -sfs skj_bet_merged_dem_folded_LD.sfs -fstout skj_bet_merged_dem_folded_LD
 
-qsub sfs_skj_bet_dem_folded
+qsub sfs_skj_bet_merged_dem_folded_LD
 
 # global Fst between populations (after LD pruning and folding)
-realSFS fst stats skj_bet_dem_folded.fst.idx
+realSFS fst stats skj_bet_merged_dem_folded_LD.fst.idx
 #output:
-FST.Unweight[nObs:150324]:0.009746 Fst.Weight:0.403691
+FST.Unweight[nObs:668111]:0.006065 Fst.Weight:0.278329
 
 # writing down 2d-SFS priors - YFT vs BET 
->sfs_yft_bet_dem_folded
-nano sfs_yft_bet_dem_folded
+>sfs_yft_bet_merged_dem_folded_LD
+nano sfs_yft_bet_merged_dem_folded_LD
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_bet_dem_folded # job name, anything you want
+#$ -N sfs_yft_bet_merged_dem_folded_LD # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_bet_dem_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_bet_merged_dem_folded_LD.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_dem.saf.idx bet_dem.saf.idx -P 1 -fold 1 > yft_bet_dem_folded.sfs ; realSFS fst index yft_dem.saf.idx bet_dem.saf.idx -sfs yft_bet_dem_folded.sfs -fstout yft_bet_dem_folded
+realSFS yft_dem_merged_LD.saf.idx bet_dem_merged_LD.saf.idx -P 1 -fold 1 > yft_bet_merged_dem_folded_LD.sfs ; realSFS fst index yft_dem_merged_LD.saf.idx bet_dem_merged_LD.saf.idx -sfs yft_bet_merged_dem_folded_LD.sfs -fstout yft_bet_merged_dem_folded_LD
 
-qsub sfs_yft_bet_dem_folded
+qsub sfs_yft_bet_merged_dem_folded_LD
 
 # global Fst between populations (after LD pruning and folding)
-realSFS fst stats yft_bet_dem_folded.fst.idx
+realSFS fst stats yft_bet_merged_dem_folded_LD.fst.idx
 #output:
-FST.Unweight[nObs:145120]:0.007065 Fst.Weight:0.303535
+FST.Unweight[nObs:1651374]:0.006197 Fst.Weight:0.317648
 
-#-------------------------------------------Stairwayplot Analysis--------------------------------------------------
-## Following the pipeline at https://github.com/xiaoming-liu/stairway-plot-v2
-#download stairway_plot_v2.1.1.zip, add it to your home directory, and unzip
-#unzipped files live in /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1
+#------------------------- Filtering for LD with ngsLD ---------------------------------
+#https://github.com/fgvieira/ngsLD
+#Use https://github.com/fgvieira/prune_graph since ngsLD's perl-based pruning script is SLOW and the python script isn't much better (days vs. minutes difference)
 
-## SFS work with individual species groups using LD thinned sites and folded (no anc or ref)
-#Creating Folded SFS using the saf.idx files from before; note the number of sites and the SFS from running this for your stairway plot blueprint file
-realSFS skj_dem.saf.idx -fold 1 >skj_dem_folded.sfs
-realSFS yft_dem.saf.idx -fold 1 >yft_dem_folded.sfs
-realSFS bet_dem.saf.idx -fold 1 >bet_dem_folded.sfs
-
-### Making blueprint files
-#SKJ refgen w/o singletons
-head -n1 skj_dem_folded.sfs | awk '{for(i=1;i<=203;i++) printf "%s ", $i; print ""}' > skj.folded.203.sfs #use this SFS in the blueprint
-
-pwd
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/skj_stairway
-
->skj.blueprint
-nano skj.blueprint
-#example blueprint file start
-#input setting
-popid: SKJ # id of the population (no white space)
-nseq: 406 # number of sequences
-L: 182061 # total number of observed nucleic sites, including polymorphic and monomorphic (get from running realSFS on SKJ.saf.idx without saving the output)
-whether_folded: true # whethr the SFS is folded (true or false)
-SFS: 167891.773875 6047.041004 1944.822591 1110.660164 714.765405 439.371985 482.937461 348.192693 136.712061 255.378353 207.329662 174.142639 203.642574 99.428730 52.544360 160.002358 109.082950 41.832165 36.427226 72.273843 68.910505 56.523909 60.735223 45.938574 36.865472 0.852424 38.850724 42.259062 37.696614 17.778467 5.826486 68.613986 29.381748 17.342846 26.829581 3.291455 0.163232 57.102365 10.592370 17.479765 6.467542 3.715302 36.344464 0.031415 0.032035 1.100105 41.482459 24.936243 0.119140 12.398015 4.274925 22.030500 1.518344 0.027910 14.393574 20.427504 0.040903 14.059095 20.341343 17.364596 2.233405 0.000091 0.000019 14.004799 0.365157 26.840915 0.053177 0.004087 0.003071 36.850901 0.796757 2.742814 13.067512 5.053696 0.060377 0.006225 0.117609 5.064116 25.551994 10.814951 1.202507 1.843513 19.190105 0.006408 0.000103 0.000010 0.003503 11.277350 1.029658 5.915666 15.330238 2.087506 0.254177 0.160605 0.756618 8.632986 17.290067 2.292569 0.221315 0.196600 0.989212 2.990516 28.427168 4.464256 0.006873 0.000198 0.002763 0.532653 9.341449 4.607843 2.561428 7.395518 21.158330 0.005052 0.033622 3.834682 16.472883 6.558659 4.663154 1.689079 0.229224 0.074669 0.165769 29.242282 10.345741 2.004231 0.037652 0.000567 0.003826 1.717913 14.903199 1.094961 0.417886 0.834094 2.711250 7.580618 13.453529 15.195739 10.266200 2.094143 0.051177 0.000188 0.000001 0.000000 0.000000 0.000002 0.007463 8.300504 15.362074 0.370005 0.303340 1.810059 11.423345 10.980332 0.278160 0.007787 0.003865 0.010261 0.027591 0.063156 0.383062 4.941962 4.579472 0.073202 0.002334 0.007922 0.245001 3.549430 13.873998 10.045600 2.248101 0.818724 0.794217 1.073297 0.814842 0.306668 0.248218 1.212683 6.909780 7.422017 2.199048 0.745583 1.180809 7.582818 6.126330 0.304199 0.156956 2.383939 12.956974 1.650308 0.021516 0.056758 10.353914 1.783798 0.523214 0.000382 0.032533 9.328013 9.240553 0.028893 0.000158 0.002658 2.146693 
-smallest_size_of_SFS_bin_used_for_estimation: 2 # default is 1; to ignore singletons, uncomment this line and change this number to 2
-largest_size_of_SFS_bin_used_for_estimation: 203 # default is n-1; to ignore singletons, uncomment this line and change this number to nseq-2
-pct_training: 0.67 # percentage of sites for training
-nrand: 10      50      100      200 # number of random break points for each try (separated by white space)
-project_dir: /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/skj_stairway # project directory
-stairway_plot_dir: /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es # directory to the stairway plot files
-ninput: 200 # number of input files to be created for each estimation
-random_seed: 8
-#output setting
-mu: 7.3e-9 # assumed mutation rate per site per generation (NOTE: Java  interprets e as x10^ and not a natural log)
-year_per_generation: 1 # assumed generation time (in years)
-#plot setting
-plot_title: SKJ # title of the plot
-xrange: 0.1,10000 # Time (1k year) range; format: xmin,xmax; "0,0" for default
-yrange: 0,10000000 # Ne (1k individual) range; format: xmin,xmax; "0,0" for default
-xspacing: 2 # X axis spacing
-yspacing: 2 # Y axis spacing
-fontsize: 12 # Font size
-#example blueprint file end 
-
-module load java
-java -cp /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es Stairbuilder skj.blueprint
-#creates skj.blueprint.sh
-nano skj.blueprint.sh #add header for job and submit
+#Making AllSites files for individual species clusters before filtering for LD
+#starting with skipjack mapped against yft ref genome
+>angsd_skj_AllSites_merged 
+nano angsd_skj_AllSites_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N skj_blueprint # job name, anything you want
-#$ -l h_rt=12:00:00 #maximum run time
+#$ -N angsd_skj_AllSites_merged # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
-#$ -pe omp 2
+#$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o skj_blueprint.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_skj_AllSites_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1  -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 162"
+TODO="-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2 -doGeno 8"
+angsd -b bams_skj_merged -GL 1 $FILTERS $TODO -P 1 -out AllSites_skj_merged
 
-qsub skj.blueprint.sh
+qsub angsd_skj_AllSites_merged
 
-#YFT
-head -n1 yft_dem_folded.sfs | awk '{for(i=1;i<=96;i++) printf "%s ", $i; print ""}' > yft.folded.96.sfs
+NSITES=`zcat AllSites_skj_merged.mafs.gz | wc -l` 
+echo $NSITES
+#990548
 
-pwd
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/yft_stairway
+# Collecting and indexing filter-passing sites
+zcat AllSites_skj_merged.mafs.gz | cut -f 1,2 | tail -n +2 >AllSites_skj_merged
 
->yft.blueprint
-nano yft.blueprint
-#example blueprint file start
-#input setting
-popid: YFT # id of the population (no white space)
-nseq: 193 # number of sequences
-L: 158727 # total number of observed nucleic sites, including polymorphic and monomorphic (get from running realSFS on SKJ.saf.idx without saving the output)
-whether_folded: true # whethr the SFS is folded (true or false)
-SFS: 150595.151173 2953.700741 1484.511493 620.355047 626.320411 253.470211 261.737828 228.620039 99.407689 185.069519 41.133373 151.664651 43.960908 92.277699 45.306927 29.246956 64.421218 33.645176 50.190462 31.140652 16.060000 61.302696 9.738648 40.595215 84.080973 8.188220 23.093778 10.103289 9.902040 40.748805 39.082455 8.573391 24.094959 12.813090 44.568420 20.309394 15.343123 12.882461 21.011241 1.964373 10.952707 23.143967 28.682419 0.200471 0.029156 29.870008 0.000000 0.000003 6.756415 0.000000 0.000000 0.000000 4.803211 26.107175 7.409070 6.169610 0.000000 11.743526 0.625362 1.355271 16.810225 1.190843 0.000034 10.536838 7.823277 0.000055 0.000009 0.006812 14.124399 12.687138 0.000002 4.351056 0.000480 3.645965 3.576593 12.962081 0.445733 10.727187 5.271642 0.000822 0.000000 0.000000 0.000581 3.866145 13.093545 0.001691 21.275391 0.905194 7.008932 0.015556 1.036637 0.935427 1.254938 7.950402 11.857241 0.000014 
-smallest_size_of_SFS_bin_used_for_estimation: 2 # default is 1; to ignore singletons, uncomment this line and change this number to 2
-largest_size_of_SFS_bin_used_for_estimation: 96 # default is n-1; to ignore singletons, uncomment this line and change this number to nseq-2
-pct_training: 0.67 # percentage of sites for training
-nrand: 20     46      70      94 # number of random break points for each try (separated by white space)
-project_dir: /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/yft_stairway # project directory
-stairway_plot_dir: /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es # directory to the stairway plot files
-ninput: 200 # number of input files to be created for each estimation
-random_seed: 8
-#output setting
-mu: 7.3e-9 # assumed mutation rate per site per generation
-year_per_generation: 2 # assumed generation time (in years)
-#plot setting
-plot_title: YFT # title of the plot
-xrange: 0.1,10000 # Time (1k year) range; format: xmin,xmax; "0,0" for default
-yrange: 0,10000000 # Ne (1k individual) range; format: xmin,xmax; "0,0" for default
-xspacing: 2 # X axis spacing
-yspacing: 2 # Y axis spacing
-fontsize: 12 # Font size
-#example blueprint file end 
-
-module load java
-java -cp /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es Stairbuilder yft.blueprint
-#creates yft.blueprint.sh
-nano yft.blueprint.sh #add header for job and submit
+>indexing_AllSites_skj_merged
+nano indexing_AllSites_skj_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N yft_blueprint # job name, anything you want
+#$ -N indexing_AllSites_skj_merged # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
-#$ -pe omp 2
+#$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o yft_blueprint.qlog # Name the file where to redirect standard output and error
+#$ -o indexing_AllSites_skj_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+angsd sites index AllSites_skj_merged
 
-qsub yft.blueprint.sh
+qsub indexing_AllSites_skj_merged
 
-#BET
-pwd
-/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/bet_stairway
-
-head -n1 bet_dem_folded.sfs | awk '{for(i=1;i<=57;i++) printf "%s ", $i; print ""}' > bet.folded.57.sfs
-
->bet.blueprint
-nano bet.blueprint
-#example blueprint file start
-#input setting
-popid: BET # id of the population (no white space)
-nseq: 115 # number of sequences
-L: 167089 # total number of observed nucleic sites, including polymorphic and monomorphic (get from running realSFS on SKJ.saf.idx without saving the output)
-whether_folded: true # whethr the SFS is folded (true or false)
-SFS: 161743.561282 2610.444060 947.556464 454.594285 193.765567 226.012344 104.532161 62.665437 90.285445 64.253490 37.299410 33.759838 22.060784 21.350159 39.684073 18.654545 26.326794 18.842600 24.925505 16.484344 0.019564 23.617434 10.998683 8.675406 19.121469 4.797002 2.348036 4.863799 21.980257 11.843743 13.643037 0.002461 11.331491 1.948459 7.455264 19.724471 1.653598 18.685543 0.009950 24.126719 0.000000 10.153362 2.094187 0.213935 29.561056 0.000031 5.435324 7.809090 13.136315 8.211069 0.131222 22.513521 7.729778 6.480834 0.000001 0.000022 11.625277 
-smallest_size_of_SFS_bin_used_for_estimation: 2 # default is 1; to ignore singletons, uncomment this line and change this number to 2
-largest_size_of_SFS_bin_used_for_estimation: 57 # default is n-1; to ignore singletons, uncomment this line and change this number to nseq-2
-pct_training: 0.67 # percentage of sites for training
-nrand: 5      10      25      50 # number of random break points for each try (separated by white space)
-project_dir: /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/bet_stairway # project directory
-stairway_plot_dir: /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es # directory to the stairway plot files
-ninput: 200 # number of input files to be created for each estimation
-random_seed: 8
-#output setting
-mu: 7.3e-9 # assumed mutation rate per site per generation
-year_per_generation: 3 # assumed generation time (in years)
-#plot setting
-plot_title: BET # title of the plot
-xrange: 0.1,10000 # Time (1k year) range; format: xmin,xmax; "0,0" for default
-yrange: 0,10000000 # Ne (1k individual) range; format: xmin,xmax; "0,0" for default
-xspacing: 2 # X axis spacing
-yspacing: 2 # Y axis spacing
-fontsize: 12 # Font size
-#example blueprint file end 
-
-module load java
-java -cp /usr3/graduate/jaskielj/Stairway_Plotting/stairway_plot_v2.1.1/stairway_plot_es Stairbuilder bet.blueprint
-#creates yft.blueprint.sh
-nano bet.blueprint.sh #add header for job and submit
+#Trying with a large maxkb distance to see the decay curve
+#100kb, and minMaf = 0.01 
+>ngsld_skj_unlinked_merged_0.5_100kb_minmaf01
+nano ngsld_skj_unlinked_merged_0.5_100kb_minmaf01
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N bet_blueprint # job name, anything you want
+#$ -N ngsld_skj_unlinked_merged_0.5_100kb_minmaf01 # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsld_skj_unlinked_merged_0.5_100kb_minmaf01.qlog # Name the file where to redirect standard output and error
+module load ngsld
+NS=`zcat AllSites_skj_merged.geno.gz| wc -l`
+NB=`cat bams_skj_merged | wc -l`
+ngsLD --geno AllSites_skj_merged.geno.gz --probs 1 --n_ind $NB --n_sites $NS --max_kb_dist 100 --pos AllSites_skj_merged --out AllSites_skj_merged_0.5_100kb_minmaf01.LD --n_threads 1 --extend_out 1 --min_maf 0.01
+
+qsub ngsld_skj_unlinked_merged_0.5_100kb_minmaf01
+
+>LD_decay_skj
+nano LD_decay_skj
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N LD_decay_skj # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o LD_decay_skj.qlog # Name the file where to redirect standard output and error
+module load R
+LD_IN="AllSites_skj_merged_0.5_100kb_minmaf01.LD"
+SAMPLE_FRAC=0.5
+LD_SUB="${LD_IN%.LD}.sub.LD"
+HEADER='snp1\tsnp2\tdist\tr2_ExpG\tD\tDp\tr2\tn_samples\tmaf1\tmaf2\thap00\thap01\thap10\thap11\tchi2_1df'
+awk -v p="$SAMPLE_FRAC" 'NR==1 || rand()<p' "$LD_IN" > "$LD_SUB"
+sed -i "1i $HEADER" "$LD_SUB"
+printf "file\n%s\n" "$LD_SUB" > skj_ld_files.tsv
+Rscript --vanilla fit_LDdecay.R --ld_files skj_ld_files.tsv --header --col 3 --ld r2_ExpG --max_kb_dist 100 --fit_boot 200 --fit_bin_size 250 --fit_level 100 --plot_data --plot_scale 3 -o skj_LD_decay.pdf
+
+qsub LD_decay_skj
+
+#Prune with kb distance of 5kb and weight (Pearson's R^2) 0.2 based on LD plots
+>prune_LD_skj_merged_0.2_5kb_minmaf01_pg
+nano prune_LD_skj_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N prune_LD_skj_merged_0.2_5kb_minmaf01_pg # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
-#$ -pe omp 2
+#$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o bet_blueprint.qlog # Name the file where to redirect standard output and error
+#$ -o prune_LD_skj_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load rust
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/prune_graph/target/release/prune_graph --in AllSites_skj_merged_0.5_100kb_minmaf01.LD --weight-field column_4 --weight-filter "column_3 <= 5000 && column_4 >= 0.2" --out 0.2_5kb_minmaf01_skj_merged_unlinked_pg
 
-qsub bet.blueprint.sh
+qsub prune_LD_skj_merged_0.2_5kb_minmaf01_pg
 
-##========================================= ANGSD Runs with Individual Species =======================================================
+#make tab delimited and remove missing lines
+sed 's/:/\t/g' 0.2_5kb_minmaf01_skj_merged_unlinked_pg > 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites
+awk  '$2!=""' 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites.tmp; mv 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites.tmp 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites
+sort -k1 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites_2.tmp; mv 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites_2.tmp 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites
 
-## - - - - - - - - - - - - - - - - - - - -  Just Skipjack - - - - - - - - - - - - - - - - - - -
-# minind 162 (80% of 203) minQ 25 w/ -setMinDepthInd 5, LD thinned
->angsd_skj_mid5_noLD
-nano angsd_skj_mid5_noLD
+angsd sites index 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites
+
+>final_sites_skj_merged_0.2_5kb_minmaf01_pg
+nano final_sites_skj_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N final_sites_skj_merged_0.2_5kb_minmaf01_pg # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o final_sites_skj_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -hetbias_pval 1e-5 -minInd 162 -sb_pval 1e-5"
+TODO='-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2'
+angsd -sites 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites -b bams_skj_merged -GL 1 $FILTERS $TODO -P 1 -out 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites
+
+qsub final_sites_skj_merged_0.2_5kb_minmaf01_pg
+
+NSITES=`zcat 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites.mafs.gz | wc -l`
+echo $NSITES
+#28561
+
+zcat 0.2_5kb_minmaf01_skj_merged_unlinked_pg.sites.mafs.gz | cut -f 1,2 | tail -n +2 > finalsites_skj_unlinked
+angsd sites index finalsites_skj_unlinked #use this for skj analysis going forward
+
+#- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#Yellowfin LD filtering
+>angsd_yft_AllSites_merged 
+nano angsd_yft_AllSites_merged
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_AllSites_merged # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_AllSites_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1  -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 77"
+TODO="-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2 -doGeno 8"
+angsd -b bams_yft_merged -GL 1 $FILTERS $TODO -P 1 -out AllSites_yft_merged
+
+qsub angsd_yft_AllSites_merged
+
+NSITES=`zcat AllSites_yft_merged.mafs.gz | wc -l` 
+echo $NSITES
+#1791054
+
+# Collecting and indexing filter-passing sites
+zcat AllSites_yft_merged.mafs.gz | cut -f 1,2 | tail -n +2 >AllSites_yft_merged
+
+>indexing_AllSites_yft_merged
+nano indexing_AllSites_yft_merged
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N indexing_AllSites_yft_merged # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o indexing_AllSites_yft_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+angsd sites index AllSites_yft_merged
+
+qsub indexing_AllSites_yft_merged
+
+#Trying with a large maxkb distance to see the decay curve, then rerun based on the R^2 and elbow of the decay curve
+#100kb, and minMaf = 0.01 
+>ngsld_yft_unlinked_merged_0.5_100kb_minmaf01
+nano ngsld_yft_unlinked_merged_0.5_100kb_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsld_yft_unlinked_merged_0.5_100kb_minmaf01 # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsld_yft_unlinked_merged_0.5_100kb_minmaf01.qlog # Name the file where to redirect standard output and error
+module load ngsld
+NS=`zcat AllSites_yft_merged.geno.gz| wc -l`
+NB=`cat bams_yft_merged | wc -l`
+ngsLD --geno AllSites_yft_merged.geno.gz --probs 1 --n_ind $NB --n_sites $NS --max_kb_dist 100 --pos AllSites_yft_merged --out AllSites_yft_merged_0.5_100kb_minmaf01.LD --n_threads 1 --extend_out 1 --min_maf 0.01
+
+qsub ngsld_yft_unlinked_merged_0.5_100kb_minmaf01
+
+#Plotting LD Decay for first 100kb, subsampling half of the LD file from the previous job 
+>LD_decay_yft
+nano LD_decay_yft
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N LD_decay_yft # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o LD_decay_yft.qlog # Name the file where to redirect standard output and error
+module load R
+LD_IN="AllSites_yft_merged_0.5_100kb_minmaf01.LD"
+SAMPLE_FRAC=0.5
+LD_SUB="${LD_IN%.LD}.sub.LD"
+HEADER='snp1\tsnp2\tdist\tr2_ExpG\tD\tDp\tr2\tn_samples\tmaf1\tmaf2\thap00\thap01\thap10\thap11\tchi2_1df'
+awk -v p="$SAMPLE_FRAC" 'NR==1 || rand()<p' "$LD_IN" > "$LD_SUB"
+sed -i "1i $HEADER" "$LD_SUB"
+printf "file\n%s\n" "$LD_SUB" > yft_ld_files.tsv
+Rscript --vanilla fit_LDdecay.R --ld_files yft_ld_files.tsv --header --col 3 --ld r2_ExpG --max_kb_dist 100 --fit_boot 200 --fit_bin_size 250 --fit_level 100 --plot_data --plot_scale 3 -o yft_LD_decay.pdf
+
+qsub LD_decay_yft
+
+#Prune with kb distance of 5kb and weight (R^2) 0.2 pearsons r2
+>prune_LD_yft_merged_0.2_5kb_minmaf01_pg
+nano prune_LD_yft_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N prune_LD_yft_merged_0.2_5kb_minmaf01_pg # job name, anything you want
+#$ -l h_rt=48:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o prune_LD_yft_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load rust
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/prune_graph/target/release/prune_graph --in AllSites_yft_merged_0.5_100kb_minmaf01.LD --weight-field column_4 --weight-filter "column_3 <= 5000 && column_4 >= 0.2" --out 0.2_5kb_minmaf01_yft_merged_unlinked_pg
+
+qsub prune_LD_yft_merged_0.2_5kb_minmaf01_pg
+
+#make tab delimited and remove missing lines
+sed 's/:/\t/g' 0.2_5kb_minmaf01_yft_merged_unlinked_pg > 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites
+awk  '$2!=""' 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites.tmp; mv 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites.tmp 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites
+sort -k1 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites_2.tmp; mv 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites_2.tmp 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites
+
+angsd sites index 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites
+
+>final_sites_yft_merged_0.2_5kb_minmaf01_pg
+nano final_sites_yft_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N final_sites_yft_merged_0.2_5kb_minmaf01_pg # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o final_sites_yft_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -hetbias_pval 1e-5 -minInd 77 -sb_pval 1e-5"
+TODO='-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2'
+angsd -sites 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites -b bams_yft_merged -GL 1 $FILTERS $TODO -P 1 -out 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites
+
+qsub final_sites_yft_merged_0.2_5kb_minmaf01_pg
+
+NSITES=`zcat 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites.mafs.gz | wc -l`
+echo $NSITES
+#107631
+
+zcat 0.2_5kb_minmaf01_yft_merged_unlinked_pg.sites.mafs.gz | cut -f 1,2 | tail -n +2 > finalsites_yft_unlinked
+angsd sites index finalsites_yft_unlinked #use this for yft analysis going forward
+
+#-----------------------------------------------------------------------------------------
+#Bigeye LD filtering
+>angsd_bet_AllSites_merged 
+nano angsd_bet_AllSites_merged
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_AllSites_merged # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_AllSites_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1  -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 46"
+TODO="-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2 -doGeno 8"
+angsd -b bams_bet_merged -GL 1 $FILTERS $TODO -P 1 -out AllSites_bet_merged
+
+qsub angsd_bet_AllSites_merged
+
+NSITES=`zcat AllSites_bet_merged.mafs.gz | wc -l` 
+echo $NSITES
+#1902666
+
+# Collecting and indexing filter-passing sites
+zcat AllSites_bet_merged.mafs.gz | cut -f 1,2 | tail -n +2 >AllSites_bet_merged
+
+>indexing_AllSites_bet_merged
+nano indexing_AllSites_bet_merged
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N indexing_AllSites_bet_merged # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o indexing_AllSites_bet_merged.qlog # Name the file where to redirect standard output and error
+module load angsd
+angsd sites index AllSites_bet_merged
+
+qsub indexing_AllSites_bet_merged
+
+#Trying with a large maxkb distance to see the decay curve, then rerun based on the R^2 and elbow of the decay curve
+#0.5 weight, 100kb, and minMaf = 0.01 
+>ngsld_bet_unlinked_merged_0.5_100kb_minmaf01
+nano ngsld_bet_unlinked_merged_0.5_100kb_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsld_bet_unlinked_merged_0.5_100kb_minmaf01 # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsld_bet_unlinked_merged_0.5_100kb_minmaf01.qlog # Name the file where to redirect standard output and error
+module load ngsld
+NS=`zcat AllSites_bet_merged.geno.gz| wc -l`
+NB=`cat bams_bet_merged | wc -l`
+ngsLD --geno AllSites_bet_merged.geno.gz --probs 1 --n_ind $NB --n_sites $NS --max_kb_dist 100 --pos AllSites_bet_merged --out AllSites_bet_merged_0.5_100kb_minmaf01.LD --n_threads 1 --extend_out 1 --min_maf 0.01
+
+qsub ngsld_bet_unlinked_merged_0.5_100kb_minmaf01
+
+>LD_decay_bet
+nano LD_decay_bet
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N LD_decay_bet # job name, anything you want
+#$ -l h_rt=24:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o LD_decay_bet.qlog # Name the file where to redirect standard output and error
+module load R
+LD_IN="AllSites_bet_merged_0.5_100kb_minmaf01.LD"
+SAMPLE_FRAC=0.5
+LD_SUB="${LD_IN%.LD}.sub.LD"
+HEADER='snp1\tsnp2\tdist\tr2_ExpG\tD\tDp\tr2\tn_samples\tmaf1\tmaf2\thap00\thap01\thap10\thap11\tchi2_1df'
+awk -v p="$SAMPLE_FRAC" 'NR==1 || rand()<p' "$LD_IN" > "$LD_SUB"
+sed -i "1i $HEADER" "$LD_SUB"
+printf "file\n%s\n" "$LD_SUB" > bet_ld_files.tsv
+Rscript --vanilla fit_LDdecay.R --ld_files bet_ld_files.tsv --header --col 3 --ld r2_ExpG --max_kb_dist 100 --fit_boot 200 --fit_bin_size 250 --fit_level 100 --plot_data --plot_scale 3 -o bet_LD_decay.pdf
+
+qsub LD_decay_bet
+
+#Prune with kb distance of 5kb and weight (R^2) 0.2 pearsons r2 
+>prune_LD_bet_merged_0.2_5kb_minmaf01_pg
+nano prune_LD_bet_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N prune_LD_bet_merged_0.2_5kb_minmaf01_pg # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o prune_LD_bet_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load rust
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/prune_graph/target/release/prune_graph --in AllSites_bet_merged_0.5_100kb_minmaf01.LD --weight-field column_4 --weight-filter "column_3 <= 5000 && column_4 >= 0.2" --out 0.2_5kb_minmaf01_bet_merged_unlinked_pg
+
+qsub prune_LD_bet_merged_0.2_5kb_minmaf01_pg
+
+#make tab delimited and remove missing lines
+sed 's/:/\t/g' 0.2_5kb_minmaf01_bet_merged_unlinked_pg > 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites
+awk  '$2!=""' 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites.tmp; mv 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites.tmp 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites
+sort -k1 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites > 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites_2.tmp; mv 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites_2.tmp 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites
+
+angsd sites index 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites
+
+>final_sites_bet_merged_0.2_5kb_minmaf01_pg
+nano final_sites_bet_merged_0.2_5kb_minmaf01_pg
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N final_sites_bet_merged_0.2_5kb_minmaf01_pg # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o final_sites_bet_merged_0.2_5kb_minmaf01_pg.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -hetbias_pval 1e-5 -minInd 46 -sb_pval 1e-5"
+TODO='-doMajorMinor 1 -doMaf 1 -dosnpstat 1 -doPost 2'
+angsd -sites 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites -b bams_bet_merged -GL 1 $FILTERS $TODO -P 1 -out 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites
+
+qsub final_sites_bet_merged_0.2_5kb_minmaf01_pg
+
+NSITES=`zcat 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites.mafs.gz | wc -l`
+echo $NSITES
+#105972
+
+zcat 0.2_5kb_minmaf01_bet_merged_unlinked_pg.sites.mafs.gz | cut -f 1,2 | tail -n +2 > finalsites_bet_unlinked
+angsd sites index finalsites_bet_unlinked #use this for bet analysis going forward
+
+#================================= NGSRelate =============================================
+#Based on https://github.com/ANGSD/NgsRelate
+#NOTE: you will probably need to rerun ANGSD with -doGlf set to 3 to get a binary-formatted beagle.gz file, which is the input to NGSrelate. Although the new version says it can handle vcf/bcf format
+#Run on individual species clusters because estimates of relatedness can be wonky if there's background structure
+#This includes the putative divergent yellowfin cluster
+#Higher values of pairwise relatedness indicate closer relationships, with R = 1 for self, 0.5 for parent/child or full siblings, 0.25 for half-siblings, and 0 for unrelated individuals (in ideal, non-inbred scenarios). 
+
+git clone --recursive https://github.com/SAMtools/htslib
+git clone https://github.com/ANGSD/ngsRelate
+cd htslib/;make -j2;cd ../ngsRelate;make HTSSRC=../htslib/
+
+#Example from git
+### First we generate a file with allele frequencies (angsdput.mafs.gz) and a file with genotype likelihoods (angsdput.glf.gz).
+./angsd -b filelist -gl 2 -domajorminor 1 -snp_pval 1e-6 -domaf 1 -minmaf 0.05 -doGlf 3
+### Then we extract the frequency column from the allele frequency file and remove the header (to make it in the format NgsRelate needs)
+zcat angsdput.mafs.gz | cut -f6 |sed 1d >freq
+### run NgsRelate
+./ngsrelate  -g angsdput.glf.gz -n 100 -f freq  -O newres
+
+#Skipjack (same filters as for PCA, etc)
+>angsd_ngsrelate_skj
+nano angsd_ngsrelate_skj
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_ngsrelate_skj # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_ngsrelate_skj.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 162 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 3" #-doGlf set to 3 for binary beagle file
+angsd -b bams_skj_merged -sites finalsites_skj_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_ngsrelate_skj
+
+qsub angsd_ngsrelate_skj
+
+#how many SNPs?
+NSITES=`zcat angsd_ngsrelate_skj.mafs.gz | wc -l`
+echo $NSITES
+#1262
+
+zcat angsd_ngsrelate_skj.mafs.gz | cut -f5 |sed 1d >freq_skj
+gunzip -c angsd_ngsrelate_skj.glf.gz |wc -c #6143592
+
+>ngsrelate_skj
+nano ngsrelate_skj
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsrelate_skj # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 4 #ngsRelate defaults to 4 threads
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsrelate_skj.qlog # Name the file where to redirect standard output and error
+module load ngsrelate
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsRelate/ngsRelate -g angsd_ngsrelate_skj.glf.gz -n 203 -f freq_skj -z skj_samps -O skj_relate
+
+qsub ngsrelate_skj
+
+cp skj_relate skj_relate.tsv
+
+#Yellowfin
+>angsd_ngsrelate_yft
+nano angsd_ngsrelate_yft
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_ngsrelate_yft # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_ngsrelate_yft.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 3" #-doGlf set to 3 for binary beagle file
+angsd -b bams_yft_merged -sites finalsites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_ngsrelate_yft
+
+qsub angsd_ngsrelate_yft
+
+# how many SNPs?
+NSITES=`zcat angsd_ngsrelate_yft.mafs.gz | wc -l`
+echo $NSITES
+#5842
+
+zcat angsd_ngsrelate_yft.mafs.gz | cut -f5 |sed 1d >freq_yft 
+gunzip -c angsd_ngsrelate_yft.glf.gz |wc -c #13457664
+
+>ngsrelate_yft
+nano ngsrelate_yft
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsrelate_yft # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 4
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsrelate_yft.qlog # Name the file where to redirect standard output and error
+module load ngsrelate
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsRelate/ngsRelate -g angsd_ngsrelate_yft.glf.gz -n 96 -f freq_yft -z yft_samps -O yft_relate
+
+qsub ngsrelate_yft
+
+cp yft_relate yft_relate.tsv
+#Inbreeding and pairwise relatedness seem very high for the divergent yft cluster. While this points to sibship, the divergence between the two groups likely inflates these estimates. 
+#Splitting into main yft cluster and divergent cluster to see if/how relatedness changes
+
+#79 individuals, 80% is 63
+>angsd_ngsrelate_yft_main
+nano angsd_ngsrelate_yft_main
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_ngsrelate_yft_main # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_ngsrelate_yft_main.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 63 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 3" #-doGlf set to 3 for binary beagle file
+angsd -b bams_yft_merged_main -sites finalsites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_ngsrelate_yft_main
+
+qsub angsd_ngsrelate_yft_main
+
+# how many SNPs?
+NSITES=`zcat angsd_ngsrelate_yft_main.mafs.gz | wc -l`
+echo $NSITES
+#5271
+
+zcat angsd_ngsrelate_yft_main.mafs.gz | cut -f5 |sed 1d >freq_yft_main
+gunzip -c angsd_ngsrelate_yft_main.glf.gz |wc -c #9991920
+
+>ngsrelate_yft_main
+nano ngsrelate_yft_main
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsrelate_yft_main # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 4
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsrelate_yft_main.qlog # Name the file where to redirect standard output and error
+module load ngsrelate
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsRelate/ngsRelate -g angsd_ngsrelate_yft_main.glf.gz -n 79 -f freq_yft_main -z yft_samps_main -O yft_relate_main
+
+qsub ngsrelate_yft_main
+
+cp yft_relate_main yft_relate_main.tsv
+
+#Subpop (17 individuals, 80% is 14)
+>angsd_ngsrelate_yft_subpop
+nano angsd_ngsrelate_yft_subpop
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_ngsrelate_yft_subpop # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_ngsrelate_yft_subpop.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 14 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 3" #-doGlf set to 3 for binary beagle file
+angsd -b bams_yft_merged_subpop -sites finalsites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_ngsrelate_yft_subpop
+
+qsub angsd_ngsrelate_yft_subpop
+
+# how many SNPs?
+NSITES=`zcat angsd_ngsrelate_yft_subpop.mafs.gz | wc -l`
+echo $NSITES
+#4379 vs 5842 w/ all yft
+
+zcat angsd_ngsrelate_yft_subpop.mafs.gz | cut -f5 |sed 1d >freq_yft_subpop
+gunzip -c angsd_ngsrelate_yft_subpop.glf.gz |wc -c #1786224
+
+>ngsrelate_yft_subpop
+nano ngsrelate_yft_subpop
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsrelate_yft_subpop # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 4
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsrelate_yft_subpop.qlog # Name the file where to redirect standard output and error
+module load ngsrelate
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsRelate/ngsRelate -g angsd_ngsrelate_yft_subpop.glf.gz -n 17 -f freq_yft_subpop -z yft_samps_subpop -O yft_relate_subpop
+
+qsub ngsrelate_yft_subpop
+
+cp yft_relate_subpop yft_relate_subpop.tsv
+#After running this with separately calculated allele frequencies, relatedness for both groups drops significantly, with the divergent sub pop having very low pairwise relatedness, so structure was causing the elevated values before
+
+#Bigeye
+>angsd_ngsrelate_bet
+nano angsd_ngsrelate_bet
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_ngsrelate_bet # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_ngsrelate_bet.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 3" #-doGlf set to 3 for binary beagle file
+angsd -b bams_bet_merged -sites finalsites_bet_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_ngsrelate_bet
+
+qsub angsd_ngsrelate_bet
+
+# how many SNPs?
+NSITES=`zcat angsd_ngsrelate_bet.mafs.gz | wc -l`
+echo $NSITES
+#4133
+
+zcat angsd_ngsrelate_bet.mafs.gz | cut -f5 |sed 1d >freq_bet 
+gunzip -c angsd_ngsrelate_bet.glf.gz |wc -c #5652576
+
+>ngsrelate_bet
+nano ngsrelate_bet
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsrelate_bet # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 4
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsrelate_bet.qlog # Name the file where to redirect standard output and error
+module load ngsrelate
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsRelate/ngsRelate -g angsd_ngsrelate_bet.glf.gz -n 57 -f freq_bet -z bet_samps -O bet_relate
+
+qsub ngsrelate_bet
+
+cp bet_relate bet_relate.tsv
+
+# - - - - - - Removing related individuals w/ pw relatedness > 0.125 (first cousins and closer) - - - - - -
+#Note: only needed for skj as yft and bet didn't have any values much greater than 0.06
+
+#Remove the individual from each dyad with the lowest coverage >5x depth
+
+#Pool_10_Jaskiel_Lane2_S10_L004_R1_001_GTGA.trim.bt2.bam 0.40806631193128	OR	Pool_9_Jaskiel_Lane2_S9_L004_R1_001_CTAC.trim.bt2.bam 0.464120547128452
+#Pool_10_Jaskiel_Lane2_S10_L004_R1_001_TCAC.trim.bt2.bam 0.428657970232507	OR	Pool_10_Jaskiel_Lane2_S10_L004_R1_001_TGTC.trim.bt2.bam 0.446963859201678
+#Pool_12_S12_L002_R1_001_CTAC.trim.bt2.bam 0.408351326671034	OR	Pool_20_S4_L001_R1_001_CATC.trim.bt2.bam 0.593753230473589
+#Pool_13_Jaskiel_Lane2_S13_L004_R1_001_ACCA.trim.bt2.bam 0.408619481919043	OR	Pool_13_Jaskiel_Lane2_S13_L004_R1_001_GACT.trim.bt2.bam 0.517922860395852
+#Pool_13_Jaskiel_Lane2_S13_L004_R1_001_ACCA.trim.bt2.bam 0.408619481919043	OR	Pool_20_S4_L001_R1_001_GCTT.trim.bt2.bam 0.584041855541275
+#Pool_13_Jaskiel_Lane2_S13_L004_R1_001_GCTT.trim.bt2.bam 0.421166854553752	OR	Pool_8_S8_L001_R1_001_TGGT.trim.bt2.bam 0.750525547478687/Pool_9_S9_L002_R1_001_TGGT.trim.bt2.bam 0.711435166858636/281-G203.merged.bam
+#Pool_17_S1_L001_R1_001_TCAG.trim.bt2.bam 0.427811543309659	OR	Pool_18_S2_L001_R1_001_TCAG.trim.bt2.bam 0.928676327925476
+#Pool_19_S3_L001_R1_001_AGTG.trim.bt2.bam 0.690101875615118	OR	Pool_7_S7_L001_R1_001_CTAC.trim.bt2.bam 0.461787096218706
+#Pool_5_S5_L001_R1_001_GACT.trim.bt2.bam 0.668533881808307	OR	Pool_6_S6_L001_R1_001_GACT.trim.bt2.bam 0.898437010071253/Pool_8_S8_L001_R1_001_GACT.trim.bt2.bam 0.895910531598728/281-G60.merged.bam
+
+#remove 268-G3, 281-G8, 287-G45, 274-G5, 268-G5, 268-G96, 281-G92, 274-G51 from bams_all_merged and bams_skj_merged before running ANGSD for downstream analyses
+#new bamslists are bams_all_noTR_merged_norel, bams_skj_merged_norel, and bams_all_no_aux_merged_norel
+
+#----------------------------------- Outlier Detection with PCAdapt -------------------------------
+#See https://bcm-uga.github.io/pcadapt/articles/pcadapt.html
+
+
+#running angsd to create necessary files
+## - - - - - - - - - - - - - - - - - - - - Just Skipjack - - - - - - - - - - - - - - - - - - -
+# minind 156 (80% of 195) minQ 25 w/ -setMinDepthInd 5, LD thinned, no related individuals
+>angsd_skj_mid5_noLD_merged_norel
+nano angsd_skj_mid5_noLD_merged_norel
 #!/bin/bash -l 
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_skj_mid5_noLD # job name, anything you want
+#$ -N angsd_skj_mid5_noLD_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_skj_mid5_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_skj_mid5_noLD_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 162 -snp_pval 1e-5 -minMaf 0.05"
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 156 -snp_pval 1e-5 -minMaf 0.05"
 TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 2"
-angsd -b bams_skj -sites finalsites_0.2_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_noLD
+angsd -b bams_skj_merged_norel -sites finalsites_skj_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_noLD_merged_norel
 
-qsub angsd_skj_mid5_noLD
+qsub angsd_skj_mid5_noLD_merged_norel
 
 # how many SNPs?
-NSITES=`zcat angsd_skj_mid5_noLD.mafs.gz | wc -l`
+NSITES=`zcat angsd_skj_mid5_noLD_merged_norel.mafs.gz | wc -l`
 echo $NSITES
-#334
+#1326 vs 1262 w/ related skj
+
+# minind 156 (80% of 195) minQ 25 w/ -setMinDepthInd 5, LD thinned, minmaf 0.01
+>angsd_skj_mid5_noLD_merged_minmaf01_norel
+nano angsd_skj_mid5_noLD_merged_minmaf01_norel
+#!/bin/bash -l 
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_skj_mid5_noLD_merged_minmaf01_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_skj_mid5_noLD_merged_minmaf01_norel.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 156 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 2"
+angsd -b bams_skj_merged_norel -sites finalsites_skj_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_noLD_merged_minmaf01_norel
+
+qsub angsd_skj_mid5_noLD_merged_minmaf01_norel
+
+# how many SNPs?
+NSITES=`zcat angsd_skj_mid5_noLD_merged_minmaf01_norel.mafs.gz | wc -l`
+echo $NSITES
+#5077 vs 4828 w/ related skj 
 
 ## - - - - - - - - - - - - - - - - - - - -  Just Yellowfin - - - - - - - - - - - - - - - - - - -
-# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned
->angsd_yft_mid5_noLD
-nano angsd_yft_mid5_noLD
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_yft_mid5_noLD_merged
+nano angsd_yft_mid5_noLD_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_yft_mid5_noLD # job name, anything you want
+#$ -N angsd_yft_mid5_noLD_merged # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_yft_mid5_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_yft_mid5_noLD_merged.qlog # Name the file where to redirect standard output and error
 module load angsd
 FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
 TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
-angsd -b bams_yft -sites finalsites_0.2_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD
+angsd -b bams_yft_merged -sites finalsites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged
 
-qsub angsd_yft_mid5_noLD
+qsub angsd_yft_mid5_noLD_merged
 
-NSITES=`zcat angsd_yft_mid5_noLD.mafs.gz | wc -l` 
+NSITES=`zcat angsd_yft_mid5_noLD_merged.mafs.gz | wc -l` 
 echo $NSITES
-#383
+#5842
+
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, minmaf 0.01
+>angsd_yft_mid5_noLD_merged_minmaf01
+nano angsd_yft_mid5_noLD_merged_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_noLD_merged_minmaf01 # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_noLD_merged_minmaf01.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites finalsites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged_minmaf01
+
+qsub angsd_yft_mid5_noLD_merged_minmaf01
+
+NSITES=`zcat angsd_yft_mid5_noLD_merged_minmaf01.mafs.gz | wc -l` 
+echo $NSITES
+#17174
 
 # - - - - - - - - - - - - - - - - - - - - Just Bigeye - - - - - - - - - - - - - - - - - - - - - - - 
-# minind 45 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned
->angsd_bet_mid5_noLD
-nano angsd_bet_mid5_noLD
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_bet_mid5_noLD_merged
+nano angsd_bet_mid5_noLD_merged
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_bet_mid5_noLD # job name, anything you want
+#$ -N angsd_bet_mid5_noLD_merged # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_bet_mid5_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_bet_mid5_noLD_merged.qlog # Name the file where to redirect standard output and error
 module load angsd
-FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 45 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
 TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
-angsd -b bams_bet -sites finalsites_0.2_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD
+angsd -b bams_bet_merged -sites finalsites_bet_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged
 
-qsub angsd_bet_mid5_noLD
+qsub angsd_bet_mid5_noLD_merged
 
-NSITES=`zcat angsd_bet_mid5_noLD.mafs.gz | wc -l` 
+NSITES=`zcat angsd_bet_mid5_noLD_merged.mafs.gz | wc -l` 
 echo $NSITES
-#302
+#4133 
+
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams, minmaf 0.01
+>angsd_bet_mid5_noLD_merged_minmaf01
+nano angsd_bet_mid5_noLD_merged_minmaf01
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_noLD_merged_minmaf01 # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_noLD_merged_minmaf01.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites finalsites_bet_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged_minmaf01
+
+qsub angsd_bet_mid5_noLD_merged_minmaf01
+
+NSITES=`zcat angsd_bet_mid5_noLD_merged_minmaf01.mafs.gz | wc -l` 
+echo $NSITES
+#13317
+
+#Converting bcf --> vcf --> bed, bim, fam files
+#general structure
+module load bcftools
+bcftools convert -O v -o angsd_.vcf angsd_.bcf
+
+#converting to bed format (also creates .fam and .bim files needed in PCAdapt R scripts)
+#keep --allow-extra-chr 0 for least CV error in admixture, and remove the zero and redo for input files for PCAdapt
+module load plink
+module load bcftools
+
+#all_mid5_noLD_merged_noaux_norel
+plink --vcf angsd_all_mid5_noLD_merged_noaux_norel.vcf --make-bed --allow-extra-chr --out angsd_all_mid5_noLD_merged_noaux_norel --const-fid 0
+
+#all (merged, noaux, noLD, minmaf01)
+bcftools convert -O v -o angsd_all_mid5_noLD_merged_minmaf01_noaux_norel.vcf angsd_all_mid5_noLD_merged_minmaf01_noaux_norel.bcf
+plink --vcf angsd_all_mid5_noLD_merged_minmaf01_noaux_norel.vcf --make-bed --allow-extra-chr --out angsd_all_mid5_noLD_merged_minmaf01_noaux_norel --const-fid 0
+
+#skj (merged, noLD, norel)
+plink --vcf angsd_skj_mid5_noLD_merged_norel.vcf --make-bed --allow-extra-chr --out angsd_skj_mid5_noLD_merged_norel --const-fid 0
+
+#skj (merged, noLD, norel, minmaf01)
+bcftools convert -O v -o angsd_skj_mid5_noLD_merged_minmaf01_norel.vcf angsd_skj_mid5_noLD_merged_minmaf01_norel.bcf
+plink --vcf angsd_skj_mid5_noLD_merged_minmaf01_norel.vcf --make-bed --allow-extra-chr --out angsd_skj_mid5_noLD_merged_minmaf01_norel --const-fid 0
+
+#yft (merged, noLD)
+plink --vcf angsd_yft_mid5_noLD_merged.vcf --make-bed --allow-extra-chr --out angsd_yft_mid5_noLD_merged --const-fid 0
+
+#yft (merged, noLD, minmaf01)
+bcftools convert -O v -o angsd_yft_mid5_noLD_merged_minmaf01.vcf angsd_yft_mid5_noLD_merged_minmaf01.bcf
+plink --vcf angsd_yft_mid5_noLD_merged_minmaf01.vcf --make-bed --allow-extra-chr --out angsd_yft_mid5_noLD_merged_minmaf01 --const-fid 0
+
+#bet (merged, noLD)
+plink --vcf angsd_bet_mid5_noLD_merged.vcf --make-bed --allow-extra-chr --out angsd_bet_mid5_noLD_merged --const-fid 0
+
+#bet (merged, noLD, minmaf01)
+bcftools convert -O v -o angsd_bet_mid5_noLD_merged_minmaf01.vcf angsd_bet_mid5_noLD_merged_minmaf01.bcf
+plink --vcf angsd_bet_mid5_noLD_merged_minmaf01.vcf --make-bed --allow-extra-chr --out angsd_bet_mid5_noLD_merged_minmaf01 --const-fid 0
+
+#scp bed, bim, and fam files and use PCAdapt code in R to produce txt files for outlier sites. Then use that and the list of pruned sites to make lists of neutral sites and run ANGSD for PCA etc.
+
+#- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+#Here I'm working with the .txt files produced in the R script for PCadapt. First, I trim them to just be the location and the length:
+zgrep "^[^#]" outliers_all_mid5_noLD_merged_noaux_norel_k4.txt | awk '{print $2,$3}' >outlier_sites_all_noLD_merged_noaux_norel_k4.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_all_noLD_merged_noaux_norel_k4.sites > outliers_all_noLD_merged_noaux_norel_k4.sites
+awk '{print $1"\t"$2}' outliers_all_noLD_merged_noaux_norel_k4.sites > outliers_all_noLD_merged_noaux_norel_k4
+module load angsd 
+angsd sites index outliers_all_noLD_merged_noaux_norel_k4
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_all_noLD_merged_noaux_norel_k4 finalsites_all_unlinked > neutral_sites_all_unlinked #check number of lines to make sure it looks right
+angsd sites index neutral_sites_all_unlinked
+
+#Repeating for all outlier lists
+#All Sites, minmaf01
+zgrep "^[^#]" outliers_all_mid5_noLD_merged_minmaf01_noaux_norel_k4.txt | awk '{print $2,$3}' >outlier_sites_all_noLD_merged_minmaf01_noaux_norel_k4.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_all_noLD_merged_minmaf01_noaux_norel_k4.sites > outliers_all_noLD_merged_minmaf01_noaux_norel_k4.sites
+awk '{print $1"\t"$2}' outliers_all_noLD_merged_minmaf01_noaux_norel_k4.sites > outliers_all_noLD_merged_minmaf01_noaux_norel_k4
+angsd sites index outliers_all_noLD_merged_minmaf01_noaux_norel_k4
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_all_noLD_merged_minmaf01_noaux_norel_k4 finalsites_all_unlinked > neutral_sites_all_unlinked_minmaf01 #check number of lines to make sure it looks right
+angsd sites index neutral_sites_all_unlinked_minmaf01
+
+####Note: no skipjack outlier sites on the ref run
+
+#Yellowfin
+zgrep "^[^#]" outliers_yft_mid5_noLD_merged_k2.txt | awk '{print $2,$3}' >outlier_sites_yft_noLD_merged_k2.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_yft_noLD_merged_k2.sites > outliers_yft_noLD_merged_k2.sites
+awk '{print $1"\t"$2}' outliers_yft_noLD_merged_k2.sites > outliers_yft_noLD_merged_k2
+angsd sites index outliers_yft_noLD_merged_k2
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_yft_noLD_merged_k2 finalsites_yft_unlinked > neutral_sites_yft_unlinked #check number of lines to make sure it looks right
+angsd sites index neutral_sites_yft_unlinked
+
+#Yellowfin (minmaf01)
+zgrep "^[^#]" outliers_yft_mid5_noLD_merged_minmaf01_k2.txt | awk '{print $2,$3}' >outlier_sites_yft_noLD_merged_minmaf01_k2.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_yft_noLD_merged_minmaf01_k2.sites > outliers_yft_noLD_merged_minmaf01_k2.sites
+awk '{print $1"\t"$2}' outliers_yft_noLD_merged_minmaf01_k2.sites > outliers_yft_noLD_merged_minmaf01_k2
+angsd sites index outliers_yft_noLD_merged_minmaf01_k2
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_yft_noLD_merged_minmaf01_k2 finalsites_yft_unlinked > neutral_sites_yft_unlinked_minmaf01 #check number of lines to make sure it looks right
+angsd sites index neutral_sites_yft_unlinked_minmaf01
+
+#Bigeye
+zgrep "^[^#]" outliers_bet_mid5_noLD_merged_k1.txt | awk '{print $2,$3}' >outlier_sites_bet_noLD_merged_k1.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_bet_noLD_merged_k1.sites > outliers_bet_noLD_merged_k1.sites
+awk '{print $1"\t"$2}' outliers_bet_noLD_merged_k1.sites > outliers_bet_noLD_merged_k1
+angsd sites index outliers_bet_noLD_merged_k1
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_bet_noLD_merged_k1 finalsites_bet_unlinked > neutral_sites_bet_unlinked #check number of lines to make sure it looks right
+angsd sites index neutral_sites_bet_unlinked
+
+#Bigeye (minmaf01)
+zgrep "^[^#]" outliers_bet_mid5_noLD_merged_minmaf01_k1.txt | awk '{print $2,$3}' >outlier_sites_bet_noLD_merged_minmaf01_k1.sites
+
+#Then remove the quotation marks around the contig names
+sed 's/"//g' outlier_sites_bet_noLD_merged_minmaf01_k1.sites > outliers_bet_noLD_merged_minmaf01_k1.sites
+awk '{print $1"\t"$2}' outliers_bet_noLD_merged_minmaf01_k1.sites > outliers_bet_noLD_merged_minmaf01_k1
+angsd sites index outliers_bet_noLD_merged_minmaf01_k1
+
+#Subtract outliers from LD-pruned allsites file
+grep -Fv -f outliers_bet_noLD_merged_minmaf01_k1 finalsites_bet_unlinked > neutral_sites_bet_unlinked_minmaf01 #check number of lines to make sure it looks right
+angsd sites index neutral_sites_bet_unlinked_minmaf01
+
+#------------- ANGSD Runs with Neutral and Outlier Sites on Individual Species clusters --------------
+#note: skipjack had no outlier sites detected so the ANGSD run(s) for that group won't have "neutral" in the name, but they are in fact neutral sites only
+
+## - - - - - - - - - - - - - - - - - - - - Just Skipjack - - - - - - - - - - - - - - - - - - -
+# minind 156 (80% of 195) minQ 25 w/ -setMinDepthInd 5, LD thinned, no related individuals
+>angsd_skj_mid5_noLD_merged_norel
+nano angsd_skj_mid5_noLD_merged_norel
+#!/bin/bash -l 
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_skj_mid5_noLD_merged_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_skj_mid5_noLD_merged_norel.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 156 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 2"
+angsd -b bams_skj_merged_norel -sites finalsites_skj_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_noLD_merged_norel
+
+qsub angsd_skj_mid5_noLD_merged_norel
+
+# how many SNPs?
+NSITES=`zcat angsd_skj_mid5_noLD_merged_norel.mafs.gz | wc -l`
+echo $NSITES
+#1326 vs 1262 w/ related skj
+
+# minind 156 (80% of 195) minQ 25 w/ -setMinDepthInd 5, LD thinned, minmaf 0.01
+>angsd_skj_mid5_noLD_merged_minmaf01_norel
+nano angsd_skj_mid5_noLD_merged_minmaf01_norel
+#!/bin/bash -l 
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_skj_mid5_noLD_merged_minmaf01_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_skj_mid5_noLD_merged_minmaf01_norel.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 156 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 2"
+angsd -b bams_skj_merged_norel -sites finalsites_skj_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_noLD_merged_minmaf01_norel
+
+qsub angsd_skj_mid5_noLD_merged_minmaf01_norel
+
+# how many SNPs?
+NSITES=`zcat angsd_skj_mid5_noLD_merged_minmaf01_norel.mafs.gz | wc -l`
+echo $NSITES
+#5077 vs 4828 w/ related skj 
+
+#Without LD filtered sites
+# minind 156 (80% of 195) minQ 25 w/ -setMinDepthInd 5, NOT LD thinned, no related individuals
+>angsd_skj_mid5_merged_norel
+nano angsd_skj_mid5_merged_norel
+#!/bin/bash -l 
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_skj_mid5_merged_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_skj_mid5_merged_norel.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -setMinDepthInd 5 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 156 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBCF 1 -doPost 1 -doGlf 2"
+angsd -b bams_skj_merged_norel -sites AllSites_skj_merged -GL 1 $FILTERS $TODO -P 1 -out angsd_skj_mid5_merged_norel
+
+qsub angsd_skj_mid5_merged_norel
+
+# how many SNPs?
+NSITES=`zcat angsd_skj_mid5_merged_norel.mafs.gz | wc -l`
+echo $NSITES
+#1447 vs 1326 (lost 121)
+
+#-----------------------------------------------------------------------------------------
+#Yellowfin - Neutral
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_yft_mid5_noLD_merged_neutral
+nano angsd_yft_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites neutral_sites_yft_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged_neutral
+
+qsub angsd_yft_mid5_noLD_merged_neutral
+
+NSITES=`zcat angsd_yft_mid5_noLD_merged_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#3577 vs 5842 with all sites
+
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, minmaf 0.01
+>angsd_yft_mid5_noLD_merged_minmaf01_neutral
+nano angsd_yft_mid5_noLD_merged_minmaf01_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_noLD_merged_minmaf01_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_noLD_merged_minmaf01_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites neutral_sites_yft_unlinked_minmaf01 -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged_minmaf01_neutral
+
+qsub angsd_yft_mid5_noLD_merged_minmaf01_neutral
+
+NSITES=`zcat angsd_yft_mid5_noLD_merged_minmaf01_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#14889 vs 17174 with all sites
+
+#Yellowfin - Outlier
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_yft_mid5_noLD_merged_outlier
+nano angsd_yft_mid5_noLD_merged_outlier
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_noLD_merged_outlier # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_noLD_merged_outlier.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites outliers_yft_noLD_merged_k2 -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged_outlier
+
+qsub angsd_yft_mid5_noLD_merged_outlier
+
+NSITES=`zcat angsd_yft_mid5_noLD_merged_outlier.mafs.gz | wc -l` 
+echo $NSITES
+#2266 vs 5842 with all sites
+
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, LD thinned, minmaf 0.01
+>angsd_yft_mid5_noLD_merged_minmaf01_outlier
+nano angsd_yft_mid5_noLD_merged_minmaf01_outlier
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_noLD_merged_minmaf01_outlier # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_noLD_merged_minmaf01_outlier.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites outliers_yft_noLD_merged_minmaf01_k2 -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_noLD_merged_minmaf01_outlier
+
+qsub angsd_yft_mid5_noLD_merged_minmaf01_outlier
+
+NSITES=`zcat angsd_yft_mid5_noLD_merged_minmaf01_outlier.mafs.gz | wc -l` 
+echo $NSITES
+#2286 vs 17174 with all sites
+
+#Without LD filters
+# minind 77 (80% of 96) minQ 25 w/ -setMinDepthInd 5, NOT LD thinned, merged bams
+>angsd_yft_mid5_merged_neutral
+nano angsd_yft_mid5_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_yft_mid5_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_yft_mid5_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 77 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_yft_merged -sites AllSites_yft_merged -GL 1 $FILTERS $TODO -P 1 -out angsd_yft_mid5_merged_neutral
+
+qsub angsd_yft_mid5_merged_neutral
+
+NSITES=`zcat angsd_yft_mid5_merged_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#6757 vs 3577 (lost 3,180)
+
+#-----------------------------------------------------------------------------------------
+#Bigeye - Neutral
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_bet_mid5_noLD_merged_neutral
+nano angsd_bet_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites neutral_sites_bet_unlinked -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged_neutral
+
+qsub angsd_bet_mid5_noLD_merged_neutral
+
+NSITES=`zcat angsd_bet_mid5_noLD_merged_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#4130 vs 4133 with all sites
+
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams, minmaf 0.01
+>angsd_bet_mid5_noLD_merged_minmaf01_neutral
+nano angsd_bet_mid5_noLD_merged_minmaf01_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_noLD_merged_minmaf01_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_noLD_merged_minmaf01_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites neutral_sites_bet_unlinked_minmaf01 -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged_minmaf01_neutral
+
+qsub angsd_bet_mid5_noLD_merged_minmaf01_neutral
+
+NSITES=`zcat angsd_bet_mid5_noLD_merged_minmaf01_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#13315 vs 13317 with all sites
+
+#Bigeye - Outlier
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams
+>angsd_bet_mid5_noLD_merged_outlier
+nano angsd_bet_mid5_noLD_merged_outlier
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_noLD_merged_outlier # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_noLD_merged_outlier.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites outliers_bet_noLD_merged_k1 -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged_outlier
+
+qsub angsd_bet_mid5_noLD_merged_outlier
+
+NSITES=`zcat angsd_bet_mid5_noLD_merged_outlier.mafs.gz | wc -l` 
+echo $NSITES
+#4 vs 4133 with all sites
+
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, LD thinned, merged bams, minmaf 0.01
+>angsd_bet_mid5_noLD_merged_minmaf01_outlier
+nano angsd_bet_mid5_noLD_merged_minmaf01_outlier
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_noLD_merged_minmaf01_outlier # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_noLD_merged_minmaf01_outlier.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.01"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites outliers_bet_noLD_merged_minmaf01_k1 -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_noLD_merged_minmaf01_outlier
+
+qsub angsd_bet_mid5_noLD_merged_minmaf01_outlier
+
+NSITES=`zcat angsd_bet_mid5_noLD_merged_minmaf01_outlier.mafs.gz | wc -l` 
+echo $NSITES
+#3 vs 13317 with all sites
+
+#Not LD filtered
+# minind 46 (80% of 57) minQ 25 w/ -setMinDepthInd 5, NOT LD thinned, merged bams
+>angsd_bet_mid5_merged_neutral
+nano angsd_bet_mid5_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_bet_mid5_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_bet_mid5_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 46 -setMinDepthInd 5 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2" 
+angsd -b bams_bet_merged -sites AllSites_bet_merged -GL 1 $FILTERS $TODO -P 1 -out angsd_bet_mid5_merged_neutral
+
+qsub angsd_bet_mid5_merged_neutral
+
+NSITES=`zcat angsd_bet_mid5_merged_neutral.mafs.gz | wc -l` 
+echo $NSITES
+#4580 vs 4130 (lost 450)
+
+#=========================================================================================
+##--NGSadmix and ADMIXTURE (ind. species cluster, LD thinned, no related ind., neutral sites)
+pwd
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis
+
+# First, install:
+wget popgen.dk/software/download/NGSadmix/ngsadmix32.cpp 
+g++ ngsadmix32.cpp -O3 -lpthread -lz -o NGSadmix
+
+#Skipjack
+>ngsadmix_skj_mid5_noLD_merged_norel
+nano ngsadmix_skj_mid5_noLD_merged_norel
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsadmix_skj_mid5_noLD_merged_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsadmix_skj_mid5_noLD_merged_norel.qlog # Name the file where to redirect standard output and error
+mkdir /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_skj_output_files
+for K in `seq 1 5` ;
+do
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_skj_mid5_noLD_merged_norel.beagle.gz -K $K -P 1 -o /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_skj_output_files/ngsadmix_skj_mid5_noLD_merged_norel_k${K};
+done
+
+qsub ngsadmix_skj_mid5_noLD_merged_norel
+
+# scp *qopt files to local machine, use admixturePlotting_v5.R to plot
+bcftools convert -O v -o angsd_skj_mid5_noLD_merged_norel.vcf angsd_skj_mid5_noLD_merged_norel.bcf
+plink --vcf angsd_skj_mid5_noLD_merged_norel.vcf --make-bed --allow-extra-chr 0 --out angsd_skj_mid5_noLD_merged_norel --const-fid 0
+
+#Don't run this and remove once you're sure you don't need it
+for K in `seq 1 5`; \
+do admixture --cv angsd_skj_mid5_noLD_merged_norel.bed $K | tee myresult_skj_mid5_noLD_merged_norel_${K}.out; done
+# use this to check K of least CV error:
+grep -h CV myresult_skj_mid5_noLD_merged_norel_*.out
+
+#Trying multiple replicates per K and Evanno method for better confidence in K
+>admixture_skj_mid5_noLD_merged_norel
+nano admixture_skj_mid5_noLD_merged_norel
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N admixture_skj_mid5_noLD_merged_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o admixture_skj_mid5_noLD_merged_norel.qlog # Name the file where to redirect standard output and error
+module load admixture/1.3.0
+for K in $(seq 1 5); do
+  for REP in $(seq 1 10); do
+    SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
+    admixture --cv=10 --seed=$SEED angsd_skj_mid5_noLD_merged_norel.bed $K \
+      | tee /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_skj_output_files/myresult_skj_mid5_noLD_merged_norel_K${K}_rep${REP}.out
+  done
+done
+grep "CV error" /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_skj_output_files/myresult_skj_mid5_noLD_merged_norel_K*_rep*.out > /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_skj_output_files/admixture_cv_errors_skj_noLD_merged_norel.txt
+
+qsub admixture_skj_mid5_noLD_merged_norel
+#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
+
+#-----------------------------------Yellowfin (neutral sites)
+>ngsadmix_yft_mid5_noLD_merged_neutral
+nano ngsadmix_yft_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsadmix_yft_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsadmix_yft_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+for K in `seq 1 5` ;
+do
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_yft_mid5_noLD_merged_neutral.beagle.gz -K $K -P 1 -o /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_yft_output_files/ngsadmix_yft_mid5_noLD_merged_neutral_k${K};
+done
+
+qsub ngsadmix_yft_mid5_noLD_merged_neutral
+
+# scp *qopt files to local machine, use admixturePlotting_v5.R to plot
+bcftools convert -O v -o angsd_yft_mid5_noLD_merged_neutral.vcf angsd_yft_mid5_noLD_merged_neutral.bcf
+plink --vcf angsd_yft_mid5_noLD_merged_neutral.vcf --make-bed --allow-extra-chr 0 --out angsd_yft_mid5_noLD_merged_neutral --const-fid 0
+
+#Don't run this and remove once you're sure you don't need it
+for K in `seq 1 5`; \
+do admixture --cv angsd_yft_mid5_noLD_merged_neutral.bed $K | tee myresult_yft_mid5_noLD_merged_neutral_${K}.out; done
+# use this to check K of least CV error:
+grep -h CV myresult_yft_mid5_noLD_merged_neutral_*.out
+
+#Trying multiple replicates per K and Evanno method for better confidence in K
+>admixture_yft_mid5_noLD_merged_neutral
+nano admixture_yft_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N admixture_yft_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o admixture_yft_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load admixture/1.3.0
+for K in $(seq 1 5); do
+  for REP in $(seq 1 10); do
+    SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
+    admixture --cv=10 --seed=$SEED angsd_yft_mid5_noLD_merged_neutral.bed $K \
+      | tee /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_yft_output_files/myresult_yft_mid5_noLD_merged_neutral_K${K}_rep${REP}.out
+  done
+done
+grep "CV error" /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_yft_output_files/myresult_yft_mid5_noLD_merged_neutral_K*_rep*.out > /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_yft_output_files/admixture_cv_errors_yft_noLD_merged_neutral.txt
+
+qsub admixture_yft_mid5_noLD_merged_neutral
+#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
+
+#----------------------------------Bigeye (Neutral sites)
+>ngsadmix_bet_mid5_noLD_merged_neutral
+nano ngsadmix_bet_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N ngsadmix_bet_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o ngsadmix_bet_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+for K in `seq 1 5` ;
+do
+/projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/NGSadmix -likes angsd_bet_mid5_noLD_merged_neutral.beagle.gz -K $K -P 1 -o /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_bet_output_files/ngsadmix_bet_mid5_noLD_merged_neutral_k${K};
+done
+
+qsub ngsadmix_bet_mid5_noLD_merged_neutral
+
+# scp *qopt files to local machine, use admixturePlotting_v5.R to plot
+bcftools convert -O v -o angsd_bet_mid5_noLD_merged_neutral.vcf angsd_bet_mid5_noLD_merged_neutral.bcf
+plink --vcf angsd_bet_mid5_noLD_merged_neutral.vcf --make-bed --allow-extra-chr 0 --out angsd_bet_mid5_noLD_merged_neutral --const-fid 0
+
+#Don't run this and remove once you're sure you don't need it
+for K in `seq 1 5`; \
+do admixture --cv angsd_bet_mid5_noLD_merged_neutral.bed $K | tee myresult_bet_mid5_noLD_merged_neutral_${K}.out; done
+# use this to check K of least CV error:
+grep -h CV myresult_bet_mid5_noLD_merged_neutral_*.out
+
+#Trying multiple replicates per K and Evanno method for better confidence in K
+>admixture_bet_mid5_noLD_merged_neutral
+nano admixture_bet_mid5_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N admixture_bet_mid5_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o admixture_bet_mid5_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load admixture/1.3.0
+for K in $(seq 1 5); do
+  for REP in $(seq 1 10); do
+    SEED=$((1000 + $RANDOM % 100000))  # generates a random 4–5 digit number
+    admixture --cv=10 --seed=$SEED angsd_bet_mid5_noLD_merged_neutral.bed $K \
+      | tee /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_bet_output_files/myresult_bet_mid5_noLD_merged_neutral_K${K}_rep${REP}.out
+  done
+done
+grep "CV error" /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_bet_output_files/myresult_bet_mid5_noLD_merged_neutral_K*_rep*.out > /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis/ngsadmix_bet_output_files/admixture_cv_errors_bet_noLD_merged_neutral.txt
+
+qsub admixture_bet_mid5_noLD_merged_neutral
+#See Jaskiel_2025_2bRAD_Final_Workflow.Rmd for calculation of most probable K with Evanno's method (Evanno et al., 2005)
 
 # ======================================= Basic Summary Stats ======================================
-# - - - - - - - - - - - - - - - - - - - - - - - Heterozygosity - - - - - - - - - - - - - - - - - - - - 
-# Skipjack (203 individuals, 80% is 162), LD thinned sites
->angsd_het_skj_noLD
-nano angsd_het_skj_noLD
+# - - - - - - - - - - - - - - - - - - Heterozygosity (neutral sites) - - - - - - - - - - - - - - - -
+# Skipjack (195 individuals, 80% is 156), LD thinned sites, merged bams, no relatives
+>angsd_het_skj_noLD_merged_norel
+nano angsd_het_skj_noLD_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_het_skj_noLD # job name, anything you want
+#$ -N angsd_het_skj_noLD_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_het_skj_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_het_skj_noLD_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 162"
+FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 156"
 TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
-angsd -bam bams_skj -sites finalsites_0.2_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_skj_noLD
+angsd -bam bams_skj_merged_norel -sites finalsites_skj_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_skj_noLD_merged_norel
 
-qsub angsd_het_skj_noLD
+qsub angsd_het_skj_noLD_merged_norel
 
 # scp .beagle.gz and use R script to calculate heterozygosity and plot
 
-# Yellowfin (96 individuals, 80% is 77), LD thinned sites
->angsd_het_yft_noLD
-nano angsd_het_yft_noLD
+# Yellowfin (96 individuals, 80% is 77), LD thinned sites, merged bams
+>angsd_het_yft_noLD_merged_neutral
+nano angsd_het_yft_noLD_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_het_yft_noLD # job name, anything you want
+#$ -N angsd_het_yft_noLD_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_het_yft_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_het_yft_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 77"
 TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
-angsd -bam bams_yft -sites finalsites_0.2_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD
+angsd -bam bams_yft_merged -sites neutral_sites_yft_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD_merged_neutral
 
-qsub angsd_het_yft_noLD
+qsub angsd_het_yft_noLD_merged_neutral
 
-# Bigeye (57 individuals, 80% is 46) LD thinned
->angsd_het_bet_noLD
-nano angsd_het_bet_noLD
+#Yellowfin Adults 
+>angsd_het_yft_noLD_merged_neutral_adults
+nano angsd_het_yft_noLD_merged_neutral_adults
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N angsd_het_bet_noLD # job name, anything you want
+#$ -N angsd_het_yft_noLD_merged_neutral_adults # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o angsd_het_bet_noLD.qlog # Name the file where to redirect standard output and error
+#$ -o angsd_het_yft_noLD_merged_neutral_adults.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 23"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_yft_merged_2020 -sites neutral_sites_yft_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD_merged_neutral_adults
 
+qsub angsd_het_yft_noLD_merged_neutral_adults
+
+#Yellowfin Larvae
+>angsd_het_yft_noLD_merged_neutral_larvae
+nano angsd_het_yft_noLD_merged_neutral_larvae
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_yft_noLD_merged_neutral_larvae # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_yft_noLD_merged_neutral_larvae.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 54"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_yft_merged_larvae -sites neutral_sites_yft_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD_merged_neutral_larvae
+
+qsub angsd_het_yft_noLD_merged_neutral_larvae
+
+# Bigeye (57 individuals, 80% is 46) LD thinned, merged bams
+>angsd_het_bet_noLD_merged_neutral
+nano angsd_het_bet_noLD_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_bet_noLD_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_bet_noLD_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 FILTERS="-maxHetFreq 0.5 -uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 46"
 TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
-angsd -bam bams_bet -sites finalsites_0.2_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_bet_noLD
+angsd -bam bams_bet_merged -sites neutral_sites_bet_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_bet_noLD_merged_neutral
 
-qsub angsd_het_bet_noLD
+qsub angsd_het_bet_noLD_merged_neutral
 
-#------------------------------- Pairwise Fst between years of sampling within species --------------------------------------
-#first need to make individual BAM lists for each year of sampling for each species
+#Bigeye Adults
+>angsd_het_bet_noLD_merged_neutral_adults
+nano angsd_het_bet_noLD_merged_neutral_adults
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_bet_noLD_merged_neutral_adults # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_bet_noLD_merged_neutral_adults.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-maxHetFreq 0.5 -uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 19"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_bet_merged_2020 -sites neutral_sites_bet_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_bet_noLD_merged_neutral_adults
+
+qsub angsd_het_bet_noLD_merged_neutral_adults
+
+#Bigeye larvae
+>angsd_het_bet_noLD_merged_neutral_larvae
+nano angsd_het_bet_noLD_merged_neutral_larvae
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_bet_noLD_merged_neutral_larvae # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_bet_noLD_merged_neutral_larvae.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-maxHetFreq 0.5 -uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 26"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_bet_merged_larvae -sites neutral_sites_bet_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_bet_noLD_merged_neutral_larvae
+
+qsub angsd_het_bet_noLD_merged_neutral_larvae
+
+#Yellowfin Main pop
+>angsd_het_yft_noLD_merged_neutral_main
+nano angsd_het_yft_noLD_merged_neutral_main
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_yft_noLD_merged_neutral_main # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_yft_noLD_merged_neutral_main.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 63"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_yft_merged_main -sites neutral_sites_yft_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD_merged_neutral_main
+
+qsub angsd_het_yft_noLD_merged_neutral_main
+
+#Yellowfin Subpop
+>angsd_het_yft_noLD_merged_neutral_subpop
+nano angsd_het_yft_noLD_merged_neutral_subpop
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd_het_yft_noLD_merged_neutral_subpop # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o angsd_het_yft_noLD_merged_neutral_subpop.qlog # Name the file where to redirect standard output and error
+module load angsd
+FILTERS="-uniqueOnly 1 -remove_bads 1 -skipTriallelic 1 -minMapQ 20 -minQ 25 -doHWE 1 -maxHetFreq 0.5 -sb_pval 1e-5 -hetbias_pval 1e-5 -minInd 14"
+TODO="-makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 32 -doPost 1 -doGlf 2 -doCounts 1 -doMajorMinor 1 -dosnpstat 1 -doMaf 1"
+angsd -bam bams_yft_merged_subpop -sites neutral_sites_yft_unlinked -GL 1 -P 1 $TODO $FILTERS -out angsd_het_yft_noLD_merged_neutral_subpop
+
+qsub angsd_het_yft_noLD_merged_neutral_subpop
+
+#------------------------------- Pairwise Fst between years of sampling within species (neutral sites) --------------------------------------
 #Skipjack (ref)
 #Doing SAF/SFS work
 #2015 (17 individuals, so 80% is 14)
->sfs_skj_2015
-nano sfs_skj_2015
+>sfs_skj_2015_merged_norel
+nano sfs_skj_2015_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015 # job name, anything you want
+#$ -N sfs_skj_2015_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2015 -GL 1 -P 1 -minInd 14 $TODO -out skj_2015_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel_2015 -GL 1 -P 1 -minInd 14 $TODO -out skj_2015_merged_norel
 
-qsub sfs_skj_2015
+qsub sfs_skj_2015_merged_norel
 
-#2016 (69 individuals so 80% is 55)
->sfs_skj_2016
-nano sfs_skj_2016
+#2016 (66 individuals so 80% is 53)
+>sfs_skj_2016_merged_norel
+nano sfs_skj_2016_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2016 # job name, anything you want
+#$ -N sfs_skj_2016_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2016.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2016_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2016 -GL 1 -P 1 -minInd 55 $TODO -out skj_2016_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel_2016 -GL 1 -P 1 -minInd 53 $TODO -out skj_2016_merged_norel
 
-qsub sfs_skj_2016
+qsub sfs_skj_2016_merged_norel
 
-#2017 (27 individuals so 80% is 22)
->sfs_skj_2017
-nano sfs_skj_2017
+#2017 (25 individuals so 80% is 20)
+>sfs_skj_2017_merged_norel
+nano sfs_skj_2017_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2017 # job name, anything you want
+#$ -N sfs_skj_2017_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2017.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2017_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2017 -GL 1 -P 1 -minInd 22 $TODO -out skj_2017_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel_2017 -GL 1 -P 1 -minInd 20 $TODO -out skj_2017_merged_norel
 
-qsub sfs_skj_2017
+qsub sfs_skj_2017_merged_norel
 
-#2018 (73 individuals so 80% is 58)
->sfs_skj_2018
-nano sfs_skj_2018
+#2018 (71 individuals so 80% is 57)
+>sfs_skj_2018_merged_norel
+nano sfs_skj_2018_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2018 # job name, anything you want
+#$ -N sfs_skj_2018_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2018.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2018_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2018 -GL 1 -P 1 -minInd 58 $TODO -out skj_2018_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel_2018 -GL 1 -P 1 -minInd 57 $TODO -out skj_2018_merged_norel
 
-qsub sfs_skj_2018
+qsub sfs_skj_2018_merged_norel
 
-#2019 (16 individuals so 80% is 13)
->sfs_skj_2019
-nano sfs_skj_2019
+#2019 (15 individuals so 80% is 12)
+>sfs_skj_2019_merged_norel
+nano sfs_skj_2019_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2019 # job name, anything you want
+#$ -N sfs_skj_2019_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2019.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2019_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2019 -GL 1 -P 1 -minInd 13 $TODO -out skj_2019_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel_2019 -GL 1 -P 1 -minInd 12 $TODO -out skj_2019_merged_norel
 
-qsub sfs_skj_2019
+qsub sfs_skj_2019_merged_norel
 
 #2022 (only 1 individual so no minind)
->sfs_skj_2022
-nano sfs_skj_2022
+>sfs_skj_2022_merged_norel
+nano sfs_skj_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2022 # job name, anything you want
+#$ -N sfs_skj_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2022.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_skj_2022 -GL 1 -P 1 -minInd 0 $TODO -out skj_2022_allsites
+angsd -sites finalsites_skj_unlinked -b bams_skj_2022 -GL 1 -P 1 -minInd 0 $TODO -out skj_2022_merged_norel
 
-qsub sfs_skj_2022
+qsub sfs_skj_2022_merged_norel
 
 # Writing down 2d-SFS priors - 2015 & 2016
->sfs_skj_2015_2016_folded
-nano sfs_skj_2015_2016_folded
+>sfs_skj_2015_2016_merged_norel
+nano sfs_skj_2015_2016_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015_201_folded # job name, anything you want
+#$ -N sfs_skj_2015_2016_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015_2016_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_2016_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2015_allsites.saf.idx skj_2016_allsites.saf.idx -fold 1 -P 1 > skj_2015_2016_folded.sfs ; realSFS fst index skj_2015_allsites.saf.idx skj_2016_allsites.saf.idx -sfs skj_2015_2016_folded.sfs -fstout skj_2015_2016_folded
+realSFS skj_2015_merged_norel.saf.idx skj_2016_merged_norel.saf.idx -fold 1 -P 1 > skj_2015_2016_merged_norel.sfs ; realSFS fst index skj_2015_merged_norel.saf.idx skj_2016_merged_norel.saf.idx -sfs skj_2015_2016_merged_norel.sfs -fstout skj_2015_2016_merged_norel
 
-qsub sfs_skj_2015_2016_folded
+qsub sfs_skj_2015_2016_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2015_2016_folded.fst.idx
+realSFS fst stats skj_2015_2016_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:177518]:0.002985 Fst.Weight:0.007782
+FST.Unweight[nObs:26113]:0.006550 Fst.Weight:0.013112
 
 # The difference between unweighted and weighted values is averaging versus ratio of sums method. 
 # The weighted value is derived from the ratio of the separate per-locus sums of numerator and denominator values, 
 # while the unweighted value is the average of per-locus values. [If that is unclear: weighted is sum(a)/sum(a+b), while unweighted is average(a/(a+b))].
 
 # Writing down 2d-SFS priors - 2015 & 2017
->sfs_skj_2015_2017_folded
-nano sfs_skj_2015_2017_folded
+>sfs_skj_2015_2017_merged_norel
+nano sfs_skj_2015_2017_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015_2017_folded # job name, anything you want
+#$ -N sfs_skj_2015_2017_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015_2017_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_2017_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2015_allsites.saf.idx skj_2017_allsites.saf.idx -fold 1 -P 1 > skj_2015_2017_folded.sfs ; realSFS fst index skj_2015_allsites.saf.idx skj_2017_allsites.saf.idx -sfs skj_2015_2017_folded.sfs -fstout skj_2015_2017_folded
+realSFS skj_2015_merged_norel.saf.idx skj_2017_merged_norel.saf.idx -fold 1 -P 1 > skj_2015_2017_merged_norel.sfs ; realSFS fst index skj_2015_merged_norel.saf.idx skj_2017_merged_norel.saf.idx -sfs skj_2015_2017_merged_norel.sfs -fstout skj_2015_2017_merged_norel
 
-qsub sfs_skj_2015_2017_folded
+qsub sfs_skj_2015_2017_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2015_2017_folded.fst.idx
+realSFS fst stats skj_2015_2017_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:176139]:0.008875 Fst.Weight:0.002364
+FST.Unweight[nObs:26534]:0.010661 Fst.Weight:0.011377
 
 # Writing down 2d-SFS priors - 2015 & 2018
->sfs_skj_2015_2018_folded
-nano sfs_skj_2015_2018_folded
+>sfs_skj_2015_2018_merged_norel
+nano sfs_skj_2015_2018_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015_2018_folded # job name, anything you want
+#$ -N sfs_skj_2015_2018_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_2018_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2015_allsites.saf.idx skj_2018_allsites.saf.idx -fold 1 -P 1 > skj_2015_2018_folded.sfs ; realSFS fst index skj_2015_allsites.saf.idx skj_2018_allsites.saf.idx -sfs skj_2015_2018_folded.sfs -fstout skj_2015_2018_folded
+realSFS skj_2015_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -fold 1 -P 1 > skj_2015_2018_merged_norel.sfs ; realSFS fst index skj_2015_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -sfs skj_2015_2018_merged_norel.sfs -fstout skj_2015_2018_merged_norel
 
-qsub sfs_skj_2015_2018_folded
+qsub sfs_skj_2015_2018_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2015_2018_folded.fst.idx
+realSFS fst stats skj_2015_2018_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:180592]:0.003587 Fst.Weight:0.006140
+FST.Unweight[nObs:26138]:0.006809 Fst.Weight:0.010103
 
 # Writing down 2d-SFS priors - 2015 & 2019
->sfs_skj_2015_2019_folded
-nano sfs_skj_2015_2019_folded
+>sfs_skj_2015_2019_merged_norel
+nano sfs_skj_2015_2019_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015_2019_folded # job name, anything you want
+#$ -N sfs_skj_2015_2019_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_2019_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2015_allsites.saf.idx skj_2019_allsites.saf.idx -fold 1 -P 1 > skj_2015_2019_folded.sfs ; realSFS fst index skj_2015_allsites.saf.idx skj_2019_allsites.saf.idx -sfs skj_2015_2019_folded.sfs -fstout skj_2015_2019_folded
+realSFS skj_2015_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -fold 1 -P 1 > skj_2015_2019_merged_norel.sfs ; realSFS fst index skj_2015_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -sfs skj_2015_2019_merged_norel.sfs -fstout skj_2015_2019_merged_norel
 
-qsub sfs_skj_2015_2019_folded
+qsub sfs_skj_2015_2019_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2015_2019_folded.fst.idx
+realSFS fst stats skj_2015_2019_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:91045]:0.018708 Fst.Weight:0.051313
+FST.Unweight[nObs:21585]:0.020181 Fst.Weight:0.028928
 
 # Writing down 2d-SFS priors - 2015 & 2022
->sfs_skj_2015_2022_folded
-nano sfs_skj_2015_2022_folded
+>sfs_skj_2015_2022_merged_norel
+nano sfs_skj_2015_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2015_2022_folded # job name, anything you want
+#$ -N sfs_skj_2015_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2015_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2015_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2015_allsites.saf.idx skj_2022_allsites.saf.idx -fold 1 -P 1 > skj_2015_2022_folded.sfs ; realSFS fst index skj_2015_allsites.saf.idx skj_2022_allsites.saf.idx -sfs skj_2015_2022_folded.sfs -fstout skj_2015_2022_folded
+realSFS skj_2015_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -fold 1 -P 1 > skj_2015_2022_merged_norel.sfs ; realSFS fst index skj_2015_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -sfs skj_2015_2022_merged_norel.sfs -fstout skj_2015_2022_merged_norel
 
-qsub sfs_skj_2015_2022_folded
+qsub sfs_skj_2015_2022_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2015_2022_folded.fst.idx
+realSFS fst stats skj_2015_2022_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:185095]:0.115589 Fst.Weight:0.051357
+FST.Unweight[nObs:26695]:0.052561 Fst.Weight:0.060200
 
 # Writing down 2d-SFS priors - 2016 & 2017
->sfs_skj_2016_2017_folded
-nano sfs_skj_2016_2017_folded
+>sfs_skj_2016_2017_merged_norel
+nano sfs_skj_2016_2017_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2016_2017_folded # job name, anything you want
+#$ -N sfs_skj_2016_2017_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2016_2017_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2016_2017_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2016_allsites.saf.idx skj_2017_allsites.saf.idx -fold 1 -P 1 > skj_2016_2017_folded.sfs ; realSFS fst index skj_2016_allsites.saf.idx skj_2017_allsites.saf.idx -sfs skj_2016_2017_folded.sfs -fstout skj_2016_2017_folded
+realSFS skj_2016_merged_norel.saf.idx skj_2017_merged_norel.saf.idx -fold 1 -P 1 > skj_2016_2017_merged_norel.sfs ; realSFS fst index skj_2016_merged_norel.saf.idx skj_2017_merged_norel.saf.idx -sfs skj_2016_2017_merged_norel.sfs -fstout skj_2016_2017_merged_norel
 
-qsub sfs_skj_2016_2017_folded
+qsub sfs_skj_2016_2017_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2016_2017_folded.fst.idx
+realSFS fst stats skj_2016_2017_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:173716]:0.006313 Fst.Weight:0.004860
+FST.Unweight[nObs:26142]:0.007239 Fst.Weight:0.008733
 
 # Writing down 2d-SFS priors - 2016 & 2018
->sfs_skj_2016_2018_folded
-nano sfs_skj_2016_2018_folded
+>sfs_skj_2016_2018_merged_norel
+nano sfs_skj_2016_2018_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2016_2018_folded # job name, anything you want
+#$ -N sfs_skj_2016_2018_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2016_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2016_2018_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2016_allsites.saf.idx skj_2018_allsites.saf.idx -fold 1 -P 1 > skj_2016_2018_folded.sfs ; realSFS fst index skj_2016_allsites.saf.idx skj_2018_allsites.saf.idx -sfs skj_2016_2018_folded.sfs -fstout skj_2016_2018_folded
+realSFS skj_2016_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -fold 1 -P 1 > skj_2016_2018_merged_norel.sfs ; realSFS fst index skj_2016_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -sfs skj_2016_2018_merged_norel.sfs -fstout skj_2016_2018_merged_norel
 
-qsub sfs_skj_2016_2018_folded
+qsub sfs_skj_2016_2018_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2016_2018_folded.fst.idx
+realSFS fst stats skj_2016_2018_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:178107]:0.003584 Fst.Weight:0.002893
+FST.Unweight[nObs:26249]:0.003867 Fst.Weight:0.004239
 
 # Writing down 2d-SFS priors - 2016 & 2019
->sfs_skj_2016_2019_folded
-nano sfs_skj_2016_2019_folded
+>sfs_skj_2016_2019_merged_norel
+nano sfs_skj_2016_2019_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2016_2019_folded # job name, anything you want
+#$ -N sfs_skj_2016_2019_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2016_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2016_2019_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2016_allsites.saf.idx skj_2019_allsites.saf.idx -fold 1 -P 1 > skj_2016_2019_folded.sfs ; realSFS fst index skj_2016_allsites.saf.idx skj_2019_allsites.saf.idx -sfs skj_2016_2019_folded.sfs -fstout skj_2016_2019_folded
+realSFS skj_2016_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -fold 1 -P 1 > skj_2016_2019_merged_norel.sfs ; realSFS fst index skj_2016_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -sfs skj_2016_2019_merged_norel.sfs -fstout skj_2016_2019_merged_norel
 
-qsub sfs_skj_2016_2019_folded
+qsub sfs_skj_2016_2019_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2016_2019_folded.fst.idx
+realSFS fst stats skj_2016_2019_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:90202]:0.024816 Fst.Weight:0.014932
+FST.Unweight[nObs:21043]:0.025563 Fst.Weight:0.013789
 
 # Writing down 2d-SFS priors - 2016 & 2022
->sfs_skj_2016_2022_folded
-nano sfs_skj_2016_2022_folded
+>sfs_skj_2016_2022_merged_norel
+nano sfs_skj_2016_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2016_2022_folded # job name, anything you want
+#$ -N sfs_skj_2016_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2016_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2016_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2016_allsites.saf.idx skj_2022_allsites.saf.idx -fold 1 -P 1 > skj_2016_2022_folded.sfs ; realSFS fst index skj_2016_allsites.saf.idx skj_2022_allsites.saf.idx -sfs skj_2016_2022_folded.sfs -fstout skj_2016_2022_folded
+realSFS skj_2016_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -fold 1 -P 1 > skj_2016_2022_merged_norel.sfs ; realSFS fst index skj_2016_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -sfs skj_2016_2022_merged_norel.sfs -fstout skj_2016_2022_merged_norel
 
-qsub sfs_skj_2016_2022_folded
+qsub sfs_skj_2016_2022_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2016_2022_folded.fst.idx
+realSFS fst stats skj_2016_2022_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:177838]:-0.010921 Fst.Weight:0.111429
+FST.Unweight[nObs:25976]:-0.048256 Fst.Weight:0.094264
 
 # Writing down 2d-SFS priors - 2017 & 2018
->sfs_skj_2017_2018_folded
-nano sfs_skj_2017_2018_folded
+>sfs_skj_2017_2018_merged_norel
+nano sfs_skj_2017_2018_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2017_2018_folded # job name, anything you want
+#$ -N sfs_skj_2017_2018_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2017_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2017_2018_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2017_allsites.saf.idx skj_2018_allsites.saf.idx -fold 1 -P 1 > skj_2017_2018_folded.sfs ; realSFS fst index skj_2017_allsites.saf.idx skj_2018_allsites.saf.idx -sfs skj_2017_2018_folded.sfs -fstout skj_2017_2018_folded
+realSFS skj_2017_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -fold 1 -P 1 > skj_2017_2018_merged_norel.sfs ; realSFS fst index skj_2017_merged_norel.saf.idx skj_2018_merged_norel.saf.idx -sfs skj_2017_2018_merged_norel.sfs -fstout skj_2017_2018_merged_norel
 
-qsub sfs_skj_2017_2018_folded
+qsub sfs_skj_2017_2018_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2017_2018_folded.fst.idx
+realSFS fst stats skj_2017_2018_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:176276]:0.007045 Fst.Weight:0.006492
+FST.Unweight[nObs:26218]:0.007537 Fst.Weight:0.008077
 
 # Writing down 2d-SFS priors - 2017 & 2019
->sfs_skj_2017_2019_folded
-nano sfs_skj_2017_2019_folded
+>sfs_skj_2017_2019_merged_norel
+nano sfs_skj_2017_2019_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2017_2019_folded # job name, anything you want
+#$ -N sfs_skj_2017_2019_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2017_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2017_2019_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2017_allsites.saf.idx skj_2019_allsites.saf.idx -fold 1 -P 1 > skj_2017_2019_folded.sfs ; realSFS fst index skj_2017_allsites.saf.idx skj_2019_allsites.saf.idx -sfs skj_2017_2019_folded.sfs -fstout skj_2017_2019_folded
+realSFS skj_2017_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -fold 1 -P 1 > skj_2017_2019_merged_norel.sfs ; realSFS fst index skj_2017_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -sfs skj_2017_2019_merged_norel.sfs -fstout skj_2017_2019_merged_norel
 
-qsub sfs_skj_2017_2019_folded
+qsub sfs_skj_2017_2019_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2017_2019_folded.fst.idx
+realSFS fst stats skj_2017_2019_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:90328]:0.021257 Fst.Weight:0.040124
+FST.Unweight[nObs:21335]:0.021885 Fst.Weight:0.035226
 
 # Writing down 2d-SFS priors - 2017 & 2022
->sfs_skj_2017_2022_folded
-nano sfs_skj_2017_2022_folded
+>sfs_skj_2017_2022_merged_norel
+nano sfs_skj_2017_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2017_2022_folded # job name, anything you want
+#$ -N sfs_skj_2017_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2017_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2017_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2017_allsites.saf.idx skj_2022_allsites.saf.idx -fold 1 -P 1 > skj_2017_2022_folded.sfs ; realSFS fst index skj_2017_allsites.saf.idx skj_2022_allsites.saf.idx -sfs skj_2017_2022_folded.sfs -fstout skj_2017_2022_folded
+realSFS skj_2017_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -fold 1 -P 1 > skj_2017_2022_merged_norel.sfs ; realSFS fst index skj_2017_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -sfs skj_2017_2022_merged_norel.sfs -fstout skj_2017_2022_merged_norel
 
-qsub sfs_skj_2017_2022_folded
+qsub sfs_skj_2017_2022_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2017_2022_folded.fst.idx
+realSFS fst stats skj_2017_2022_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:176874]:0.029477 Fst.Weight:0.064114
+FST.Unweight[nObs:26412]:-0.029599 Fst.Weight:0.077059
 
 # Writing down 2d-SFS priors - 2018 & 2019
->sfs_skj_2018_2019_folded
-nano sfs_skj_2018_2019_folded
+>sfs_skj_2018_2019_merged_norel
+nano sfs_skj_2018_2019_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2018_2019_folded # job name, anything you want
+#$ -N sfs_skj_2018_2019_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2018_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2018_2019_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2018_allsites.saf.idx skj_2019_allsites.saf.idx -fold 1 -P 1 > skj_2018_2019_folded.sfs ; realSFS fst index skj_2018_allsites.saf.idx skj_2019_allsites.saf.idx -sfs skj_2018_2019_folded.sfs -fstout skj_2018_2019_folded
+realSFS skj_2018_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -fold 1 -P 1 > skj_2018_2019_merged_norel.sfs ; realSFS fst index skj_2018_merged_norel.saf.idx skj_2019_merged_norel.saf.idx -sfs skj_2018_2019_merged_norel.sfs -fstout skj_2018_2019_merged_norel
 
-qsub sfs_skj_2018_2019_folded
+qsub sfs_skj_2018_2019_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2018_2019_folded.fst.idx
+realSFS fst stats skj_2018_2019_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:90353]:0.026339 Fst.Weight:0.012530
+FST.Unweight[nObs:21057]:0.026764 Fst.Weight:0.017780
 
 # Writing down 2d-SFS priors - 2018 & 2022
->sfs_skj_2018_2022_folded
-nano sfs_skj_2018_2022_folded
+>sfs_skj_2018_2022_merged_norel
+nano sfs_skj_2018_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2018_2022_folded # job name, anything you want
+#$ -N sfs_skj_2018_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2018_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2018_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2018_allsites.saf.idx skj_2022_allsites.saf.idx -fold 1 -P 1 > skj_2018_2022_folded.sfs ; realSFS fst index skj_2018_allsites.saf.idx skj_2022_allsites.saf.idx -sfs skj_2018_2022_folded.sfs -fstout skj_2018_2022_folded
+realSFS skj_2018_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -fold 1 -P 1 > skj_2018_2022_merged_norel.sfs ; realSFS fst index skj_2018_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -sfs skj_2018_2022_merged_norel.sfs -fstout skj_2018_2022_merged_norel
 
-qsub sfs_skj_2018_2022_folded
+qsub sfs_skj_2018_2022_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2018_2022_folded.fst.idx
+realSFS fst stats skj_2018_2022_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:181632]:-0.005186 Fst.Weight:0.111407
+FST.Unweight[nObs:26068]:-0.049228 Fst.Weight:0.098434
 
 # Writing down 2d-SFS priors - 2019 & 2022
->sfs_skj_2019_2022_folded
-nano sfs_skj_2019_2022_folded
+>sfs_skj_2019_2022_merged_norel
+nano sfs_skj_2019_2022_merged_norel
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_skj_2019_2022_folded # job name, anything you want
+#$ -N sfs_skj_2019_2022_merged_norel # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_skj_2019_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_skj_2019_2022_merged_norel.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS skj_2019_allsites.saf.idx skj_2022_allsites.saf.idx -fold 1 -P 1 > skj_2019_2022_folded.sfs ; realSFS fst index skj_2019_allsites.saf.idx skj_2022_allsites.saf.idx -sfs skj_2019_2022_folded.sfs -fstout skj_2019_2022_folded
+realSFS skj_2019_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -fold 1 -P 1 > skj_2019_2022_merged_norel.sfs ; realSFS fst index skj_2019_merged_norel.saf.idx skj_2022_merged_norel.saf.idx -sfs skj_2019_2022_merged_norel.sfs -fstout skj_2019_2022_merged_norel
 
-qsub sfs_skj_2019_2022_folded
+qsub sfs_skj_2019_2022_merged_norel
 
 # Global Fst between populations 
-realSFS fst stats skj_2019_2022_folded.fst.idx
+realSFS fst stats skj_2019_2022_merged_norel.fst.idx
 # Output:
-FST.Unweight[nObs:91391]:-0.059145 Fst.Weight:-0.011047
+FST.Unweight[nObs:22051]:-0.072192 Fst.Weight:0.045822
 
-#------------------------ Yellowfin
+#----------------------------------------------------------------------------------------
+#Yellowfin
 cd /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis
+#FLAG: also try subpop vs main
 
 #Doing SAF/SFS work
 #2015 (8 individuals, so 80% is 6)
->sfs_yft_2015
-nano sfs_yft_2015
+>sfs_yft_2015_merged_neutral
+nano sfs_yft_2015_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015 # job name, anything you want
+#$ -N sfs_yft_2015_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2015 -GL 1 -P 1 -minInd 6 $TODO -out yft_2015_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2015 -GL 1 -P 1 -minInd 6 $TODO -out yft_2015_merged_neutral
 
-qsub sfs_yft_2015
+qsub sfs_yft_2015_merged_neutral
 
 #2016 (4 individuals, so 80% is 3)
->sfs_yft_2016
-nano sfs_yft_2016
+>sfs_yft_2016_merged_neutral
+nano sfs_yft_2016_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016 # job name, anything you want
+#$ -N sfs_yft_2016_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2016 -GL 1 -P 1 -minInd 3 $TODO -out yft_2016_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2016 -GL 1 -P 1 -minInd 3 $TODO -out yft_2016_merged_neutral
 
-qsub sfs_yft_2016
+qsub sfs_yft_2016_merged_neutral
 
 #2017 (5 individuals, so 80% is 4)
->sfs_yft_2017
-nano sfs_yft_2017
+>sfs_yft_2017_merged_neutral
+nano sfs_yft_2017_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2017 # job name, anything you want
+#$ -N sfs_yft_2017_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2017.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2017_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2017 -GL 1 -P 1 -minInd 4 $TODO -out yft_2017_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2017 -GL 1 -P 1 -minInd 4 $TODO -out yft_2017_merged_neutral
 
-qsub sfs_yft_2017
+qsub sfs_yft_2017_merged_neutral
 
 #2018 (43 individuals, so 80% is 34)
->sfs_yft_2018
-nano sfs_yft_2018
+>sfs_yft_2018_merged_neutral
+nano sfs_yft_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2018 # job name, anything you want
+#$ -N sfs_yft_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2018.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2018 -GL 1 -P 1 -minInd 34 $TODO -out yft_2018_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2018 -GL 1 -P 1 -minInd 34 $TODO -out yft_2018_merged_neutral
 
-qsub sfs_yft_2018
+qsub sfs_yft_2018_merged_neutral
 
 #2019 (1 individual, so no minind)
->sfs_yft_2019
-nano sfs_yft_2019
+>sfs_yft_2019_merged_neutral
+nano sfs_yft_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2019 # job name, anything you want
+#$ -N sfs_yft_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2019.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2019 -GL 1 -P 1 -minInd 0 $TODO -out yft_2019_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_2019 -GL 1 -P 1 -minInd 0 $TODO -out yft_2019_merged_neutral
 
-qsub sfs_yft_2019
+qsub sfs_yft_2019_merged_neutral
 
 #2020 (29 individuals, so 80% is 23)
->sfs_yft_2020
-nano sfs_yft_2020
+>sfs_yft_2020_merged_neutral
+nano sfs_yft_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2020 # job name, anything you want
+#$ -N sfs_yft_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2020.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2020 -GL 1 -P 1 -minInd 23 $TODO -out yft_2020_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2020 -GL 1 -P 1 -minInd 23 $TODO -out yft_2020_merged_neutral
 
-qsub sfs_yft_2020
+qsub sfs_yft_2020_merged_neutral
 
 #2022 (6 individuals, so 80% is 5)
->sfs_yft_2022
-nano sfs_yft_2022
+>sfs_yft_2022_merged_neutral
+nano sfs_yft_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2022 # job name, anything you want
+#$ -N sfs_yft_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2022.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_yft_2022 -GL 1 -P 1 -minInd 5 $TODO -out yft_2022_allsites
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_2022 -GL 1 -P 1 -minInd 5 $TODO -out yft_2022_merged_neutral
 
-qsub sfs_yft_2022
+qsub sfs_yft_2022_merged_neutral
 
 # Writing down 2d-SFS priors - 2015 & 2016
->sfs_yft_2015_2016_folded
-nano sfs_yft_2015_2016_folded
+>sfs_yft_2015_2016_merged_neutral
+nano sfs_yft_2015_2016_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2016_folded # job name, anything you want
+#$ -N sfs_yft_2015_2016_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2016_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2016_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2016_allsites.saf.idx -fold 1 -P 1 > yft_2015_2016_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2016_allsites.saf.idx -sfs yft_2015_2016_folded.sfs -fstout yft_2015_2016_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2016_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2016_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2016_merged_neutral.saf.idx -sfs yft_2015_2016_merged_neutral.sfs -fstout yft_2015_2016_merged_neutral
 
-qsub sfs_yft_2015_2016_folded
+qsub sfs_yft_2015_2016_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2016_folded.fst.idx
+realSFS fst stats yft_2015_2016_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:137629]:0.027312 Fst.Weight:0.063409
+FST.Unweight[nObs:101429]:0.018521 Fst.Weight:0.052742
 
 # The difference between unweighted and weighted values is averaging versus ratio of sums method. 
 # The weighted value is derived from the ratio of the separate per-locus sums of numerator and denominator values, 
 # while the unweighted value is the average of per-locus values. [If that is unclear: weighted is sum(a)/sum(a+b), while unweighted is average(a/(a+b))].
 
 # Writing down 2d-SFS priors - 2015 & 2017
->sfs_yft_2015_2017_folded
-nano sfs_yft_2015_2017_folded
+>sfs_yft_2015_2017_merged_neutral
+nano sfs_yft_2015_2017_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2017_folded # job name, anything you want
+#$ -N sfs_yft_2015_2017_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2017_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2017_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2017_allsites.saf.idx -fold 1 -P 1 > yft_2015_2017_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2017_allsites.saf.idx -sfs yft_2015_2017_folded.sfs -fstout yft_2015_2017_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2017_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2017_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2017_merged_neutral.saf.idx -sfs yft_2015_2017_merged_neutral.sfs -fstout yft_2015_2017_merged_neutral
 
-qsub sfs_yft_2015_2017_folded
+qsub sfs_yft_2015_2017_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2017_folded.fst.idx
+realSFS fst stats yft_2015_2017_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:99002]:0.056277 Fst.Weight:0.048468
+FST.Unweight[nObs:97821]:0.055376 Fst.Weight:0.047808
 
 # Writing down 2d-SFS priors - 2015 & 2018
->sfs_yft_2015_2018_folded
-nano sfs_yft_2015_2018_folded
+>sfs_yft_2015_2018_merged_neutral
+nano sfs_yft_2015_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2018_folded # job name, anything you want
+#$ -N sfs_yft_2015_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2018_allsites.saf.idx -fold 1 -P 1 > yft_2015_2018_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2018_allsites.saf.idx -sfs yft_2015_2018_folded.sfs -fstout yft_2015_2018_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2018_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -sfs yft_2015_2018_merged_neutral.sfs -fstout yft_2015_2018_merged_neutral
 
-qsub sfs_yft_2015_2018_folded
+qsub sfs_yft_2015_2018_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2018_folded.fst.idx
+realSFS fst stats yft_2015_2018_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:136019]:0.040490 Fst.Weight:0.025747
+FST.Unweight[nObs:96827]:0.031785 Fst.Weight:0.069079
 
 # Writing down 2d-SFS priors - 2015 & 2019
->sfs_yft_2015_2019_folded
-nano sfs_yft_2015_2019_folded
+>sfs_yft_2015_2019_merged_neutral
+nano sfs_yft_2015_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2019_folded # job name, anything you want
+#$ -N sfs_yft_2015_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2019_allsites.saf.idx -fold 1 -P 1 > yft_2015_2019_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2019_allsites.saf.idx -sfs yft_2015_2019_folded.sfs -fstout yft_2015_2019_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2019_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -sfs yft_2015_2019_merged_neutral.sfs -fstout yft_2015_2019_merged_neutral
 
-qsub sfs_yft_2015_2019_folded
+qsub sfs_yft_2015_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2019_folded.fst.idx
+realSFS fst stats yft_2015_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:114202]:0.079682 Fst.Weight:0.147341
+FST.Unweight[nObs:97392]:0.081482 Fst.Weight:0.138098
 
 # Writing down 2d-SFS priors - 2015 & 2020
->sfs_yft_2015_2020_folded
-nano sfs_yft_2015_2020_folded
+>sfs_yft_2015_2020_merged_neutral
+nano sfs_yft_2015_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2020_folded # job name, anything you want
+#$ -N sfs_yft_2015_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2020_allsites.saf.idx -fold 1 -P 1 > yft_2015_2020_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2020_allsites.saf.idx -sfs yft_2015_2020_folded.sfs -fstout yft_2015_2020_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2020_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_2015_2020_merged_neutral.sfs -fstout yft_2015_2020_merged_neutral
 
-qsub sfs_yft_2015_2020_folded
+qsub sfs_yft_2015_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2020_folded.fst.idx
+realSFS fst stats yft_2015_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:127644]:0.038646 Fst.Weight:0.023376
+FST.Unweight[nObs:100334]:0.035073 Fst.Weight:0.025052
 
 # Writing down 2d-SFS priors - 2015 & 2022
->sfs_yft_2015_2022_folded
-nano sfs_yft_2015_2022_folded
+>sfs_yft_2015_2022_merged_neutral
+nano sfs_yft_2015_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2015_2022_folded # job name, anything you want
+#$ -N sfs_yft_2015_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2015_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2015_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2015_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2015_2022_folded.sfs ; realSFS fst index yft_2015_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2015_2022_folded.sfs -fstout yft_2015_2022_folded
+realSFS yft_2015_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2015_2022_merged_neutral.sfs ; realSFS fst index yft_2015_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2015_2022_merged_neutral.sfs -fstout yft_2015_2022_merged_neutral
 
-qsub sfs_yft_2015_2022_folded
+qsub sfs_yft_2015_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2015_2022_folded.fst.idx
+realSFS fst stats yft_2015_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:140830]:0.025994 Fst.Weight:0.069002
+FST.Unweight[nObs:101305]:0.024941 Fst.Weight:0.051843
 
 # Writing down 2d-SFS priors - 2016 & 2017
->sfs_yft_2016_2017_folded
-nano sfs_yft_2016_2017_folded
+>sfs_yft_2016_2017_merged_neutral
+nano sfs_yft_2016_2017_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016_2017_folded # job name, anything you want
+#$ -N sfs_yft_2016_2017_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016_2017_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_2017_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2016_allsites.saf.idx yft_2017_allsites.saf.idx -fold 1 -P 1 > yft_2016_2017_folded.sfs ; realSFS fst index yft_2016_allsites.saf.idx yft_2017_allsites.saf.idx -sfs yft_2016_2017_folded.sfs -fstout yft_2016_2017_folded
+realSFS yft_2016_merged_neutral.saf.idx yft_2017_merged_neutral.saf.idx -fold 1 -P 1 > yft_2016_2017_merged_neutral.sfs ; realSFS fst index yft_2016_merged_neutral.saf.idx yft_2017_merged_neutral.saf.idx -sfs yft_2016_2017_merged_neutral.sfs -fstout yft_2016_2017_merged_neutral
 
-qsub sfs_yft_2016_2017_folded
+qsub sfs_yft_2016_2017_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2016_2017_folded.fst.idx
+realSFS fst stats yft_2016_2017_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:115814]:0.065618 Fst.Weight:0.058739
+FST.Unweight[nObs:99978]:0.044605 Fst.Weight:0.070586
 
 # Writing down 2d-SFS priors - 2016 & 2018
->sfs_yft_2016_2018_folded
-nano sfs_yft_2016_2018_folded
+>sfs_yft_2016_2018_merged_neutral
+nano sfs_yft_2016_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016_2018_folded # job name, anything you want
+#$ -N sfs_yft_2016_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2016_allsites.saf.idx yft_2018_allsites.saf.idx -fold 1 -P 1 > yft_2016_2018_folded.sfs ; realSFS fst index yft_2016_allsites.saf.idx yft_2018_allsites.saf.idx -sfs yft_2016_2018_folded.sfs -fstout yft_2016_2018_folded
+realSFS yft_2016_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -fold 1 -P 1 > yft_2016_2018_merged_neutral.sfs ; realSFS fst index yft_2016_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -sfs yft_2016_2018_merged_neutral.sfs -fstout yft_2016_2018_merged_neutral
 
-qsub sfs_yft_2016_2018_folded
+qsub sfs_yft_2016_2018_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2016_2018_folded.fst.idx
+realSFS fst stats yft_2016_2018_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:170948]:0.025166 Fst.Weight:0.031313
+FST.Unweight[nObs:99747]:0.003960 Fst.Weight:0.073581
 
 # Writing down 2d-SFS priors - 2016 & 2019
->sfs_yft_2016_2019_folded
-nano sfs_yft_2016_2019_folded
+>sfs_yft_2016_2019_merged_neutral
+nano sfs_yft_2016_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016_2019_folded # job name, anything you want
+#$ -N sfs_yft_2016_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2016_allsites.saf.idx yft_2019_allsites.saf.idx -fold 1 -P 1 > yft_2016_2019_folded.sfs ; realSFS fst index yft_2016_allsites.saf.idx yft_2019_allsites.saf.idx -sfs yft_2016_2019_folded.sfs -fstout yft_2016_2019_folded
+realSFS yft_2016_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -fold 1 -P 1 > yft_2016_2019_merged_neutral.sfs ; realSFS fst index yft_2016_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -sfs yft_2016_2019_merged_neutral.sfs -fstout yft_2016_2019_merged_neutral
 
-qsub sfs_yft_2016_2019_folded
+qsub sfs_yft_2016_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2016_2019_folded.fst.idx
+realSFS fst stats yft_2016_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:142388]:0.281447 Fst.Weight:0.183291
+FST.Unweight[nObs:99734]:0.383920 Fst.Weight:0.190273
 
 # Writing down 2d-SFS priors - 2016 & 2020
->sfs_yft_2016_2020_folded
-nano sfs_yft_2016_2020_folded
+>sfs_yft_2016_2020_merged_neutral
+nano sfs_yft_2016_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016_2020_folded # job name, anything you want
+#$ -N sfs_yft_2016_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2016_allsites.saf.idx yft_2020_allsites.saf.idx -fold 1 -P 1 > yft_2016_2020_folded.sfs ; realSFS fst index yft_2016_allsites.saf.idx yft_2020_allsites.saf.idx -sfs yft_2016_2020_folded.sfs -fstout yft_2016_2020_folded
+realSFS yft_2016_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_2016_2020_merged_neutral.sfs ; realSFS fst index yft_2016_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_2016_2020_merged_neutral.sfs -fstout yft_2016_2020_merged_neutral
 
-qsub sfs_yft_2016_2020_folded
+qsub sfs_yft_2016_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2016_2020_folded.fst.idx
+realSFS fst stats yft_2016_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:158782]:0.033139 Fst.Weight:0.030637
+FST.Unweight[nObs:103240]:0.007296 Fst.Weight:0.040054
 
 # Writing down 2d-SFS priors - 2016 & 2022
->sfs_yft_2016_2022_folded
-nano sfs_yft_2016_2022_folded
+>sfs_yft_2016_2022_merged_neutral
+nano sfs_yft_2016_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2016_2022_folded # job name, anything you want
+#$ -N sfs_yft_2016_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2016_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2016_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2016_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2016_2022_folded.sfs ; realSFS fst index yft_2016_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2016_2022_folded.sfs -fstout yft_2016_2022_folded
+realSFS yft_2016_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2016_2022_merged_neutral.sfs ; realSFS fst index yft_2016_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2016_2022_merged_neutral.sfs -fstout yft_2016_2022_merged_neutral
 
-qsub sfs_yft_2016_2022_folded
+qsub sfs_yft_2016_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2016_2022_folded.fst.idx
+realSFS fst stats yft_2016_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:184822]:0.091578 Fst.Weight:0.046851
+FST.Unweight[nObs:104422]:0.087208 Fst.Weight:0.055431
 
 # Writing down 2d-SFS priors - 2017 & 2018
->sfs_yft_2017_2018_folded
-nano sfs_yft_2017_2018_folded
+>sfs_yft_2017_2018_merged_neutral
+nano sfs_yft_2017_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2017_2018_folded # job name, anything you want
+#$ -N sfs_yft_2017_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2017_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2017_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2017_allsites.saf.idx yft_2018_allsites.saf.idx -fold 1 -P 1 > yft_2017_2018_folded.sfs ; realSFS fst index yft_2017_allsites.saf.idx yft_2018_allsites.saf.idx -sfs yft_2017_2018_folded.sfs -fstout yft_2017_2018_folded
+realSFS yft_2017_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -fold 1 -P 1 > yft_2017_2018_merged_neutral.sfs ; realSFS fst index yft_2017_merged_neutral.saf.idx yft_2018_merged_neutral.saf.idx -sfs yft_2017_2018_merged_neutral.sfs -fstout yft_2017_2018_merged_neutral
 
-qsub sfs_yft_2017_2018_folded
+qsub sfs_yft_2017_2018_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2017_2018_folded.fst.idx
+realSFS fst stats yft_2017_2018_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:114545]:0.097955 Fst.Weight:0.048053
+FST.Unweight[nObs:95663]:0.064958 Fst.Weight:0.043955
 
 # Writing down 2d-SFS priors - 2017 & 2019
->sfs_yft_2017_2019_folded
-nano sfs_yft_2017_2019_folded
+>sfs_yft_2017_2019_merged_neutral
+nano sfs_yft_2017_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2017_2019_folded # job name, anything you want
+#$ -N sfs_yft_2017_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2017_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2017_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2017_allsites.saf.idx yft_2019_allsites.saf.idx -fold 1 -P 1 > yft_2017_2019_folded.sfs ; realSFS fst index yft_2017_allsites.saf.idx yft_2019_allsites.saf.idx -sfs yft_2017_2019_folded.sfs -fstout yft_2017_2019_folded
+realSFS yft_2017_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -fold 1 -P 1 > yft_2017_2019_merged_neutral.sfs ; realSFS fst index yft_2017_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -sfs yft_2017_2019_merged_neutral.sfs -fstout yft_2017_2019_merged_neutral
 
-qsub sfs_yft_2017_2019_folded
+qsub sfs_yft_2017_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2017_2019_folded.fst.idx
+realSFS fst stats yft_2017_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:99002]:0.133817 Fst.Weight:0.121789
+FST.Unweight[nObs:96322]:0.038739 Fst.Weight:0.122689
 
 # Writing down 2d-SFS priors - 2017 & 2020
->sfs_yft_2017_2020_folded
-nano sfs_yft_2017_2020_folded
+>sfs_yft_2017_2020_merged_neutral
+nano sfs_yft_2017_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2017_2020_folded # job name, anything you want
+#$ -N sfs_yft_2017_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2017_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2017_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2017_allsites.saf.idx yft_2020_allsites.saf.idx -fold 1 -P 1 > yft_2017_2020_folded.sfs ; realSFS fst index yft_2017_allsites.saf.idx yft_2020_allsites.saf.idx -sfs yft_2017_2020_folded.sfs -fstout yft_2017_2020_folded
+realSFS yft_2017_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_2017_2020_merged_neutral.sfs ; realSFS fst index yft_2017_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_2017_2020_merged_neutral.sfs -fstout yft_2017_2020_merged_neutral
 
-qsub sfs_yft_2017_2020_folded
+qsub sfs_yft_2017_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2017_2020_folded.fst.idx
+realSFS fst stats yft_2017_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:108318]:0.122615 Fst.Weight:0.054454
+FST.Unweight[nObs:98791]:0.104127 Fst.Weight:0.044772
 
 # Writing down 2d-SFS priors - 2017 & 2022
->sfs_yft_2017_2022_folded
-nano sfs_yft_2017_2022_folded
+>sfs_yft_2017_2022_merged_neutral
+nano sfs_yft_2017_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2017_2022_folded # job name, anything you want
+#$ -N sfs_yft_2017_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2017_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2017_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2017_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2017_2022_folded.sfs ; realSFS fst index yft_2017_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2017_2022_folded.sfs -fstout yft_2017_2022_folded
+realSFS yft_2017_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2017_2022_merged_neutral.sfs ; realSFS fst index yft_2017_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2017_2022_merged_neutral.sfs -fstout yft_2017_2022_merged_neutral
 
-qsub sfs_yft_2017_2022_folded
+qsub sfs_yft_2017_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2017_2022_folded.fst.idx
+realSFS fst stats yft_2017_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:118483]:0.101068 Fst.Weight:0.050507
+FST.Unweight[nObs:99902]:0.066053 Fst.Weight:0.073657
 
 # Writing down 2d-SFS priors - 2018 & 2019
->sfs_yft_2018_2019_folded
-nano sfs_yft_2018_2019_folded
+>sfs_yft_2018_2019_merged_neutral
+nano sfs_yft_2018_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2018_2019_folded # job name, anything you want
+#$ -N sfs_yft_2018_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2018_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2018_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2018_allsites.saf.idx yft_2019_allsites.saf.idx -fold 1 -P 1 > yft_2018_2019_folded.sfs ; realSFS fst index yft_2018_allsites.saf.idx yft_2019_allsites.saf.idx -sfs yft_2018_2019_folded.sfs -fstout yft_2018_2019_folded
+realSFS yft_2018_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -fold 1 -P 1 > yft_2018_2019_merged_neutral.sfs ; realSFS fst index yft_2018_merged_neutral.saf.idx yft_2019_merged_neutral.saf.idx -sfs yft_2018_2019_merged_neutral.sfs -fstout yft_2018_2019_merged_neutral
 
-qsub sfs_yft_2018_2019_folded
+qsub sfs_yft_2018_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2018_2019_folded.fst.idx
+realSFS fst stats yft_2018_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:138722]:0.174036 Fst.Weight:0.138342
+FST.Unweight[nObs:95142]:0.038520 Fst.Weight:0.130300
 
 # Writing down 2d-SFS priors - 2018 & 2020
->sfs_yft_2018_2020_folded
-nano sfs_yft_2018_2020_folded
+>sfs_yft_2018_2020_merged_neutral
+nano sfs_yft_2018_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2018_2020_folded # job name, anything you want
+#$ -N sfs_yft_2018_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2018_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2018_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2018_allsites.saf.idx yft_2020_allsites.saf.idx -fold 1 -P 1 > yft_2018_2020_folded.sfs ; realSFS fst index yft_2018_allsites.saf.idx yft_2020_allsites.saf.idx -sfs yft_2018_2020_folded.sfs -fstout yft_2018_2020_folded
+realSFS yft_2018_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_2018_2020_merged_neutral.sfs ; realSFS fst index yft_2018_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_2018_2020_merged_neutral.sfs -fstout yft_2018_2020_merged_neutral
 
-qsub sfs_yft_2018_2020_folded
+qsub sfs_yft_2018_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2018_2020_folded.fst.idx
+realSFS fst stats yft_2018_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:156774]:0.009559 Fst.Weight:0.013989
+FST.Unweight[nObs:98969]:0.014479 Fst.Weight:0.066756
 
 # Writing down 2d-SFS priors - 2018 & 2022
->sfs_yft_2018_2022_folded
-nano sfs_yft_2018_2022_folded
+>sfs_yft_2018_2022_merged_neutral
+nano sfs_yft_2018_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2018_2022_folded # job name, anything you want
+#$ -N sfs_yft_2018_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2018_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2018_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2018_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2018_2022_folded.sfs ; realSFS fst index yft_2018_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2018_2022_folded.sfs -fstout yft_2018_2022_folded
+realSFS yft_2018_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2018_2022_merged_neutral.sfs ; realSFS fst index yft_2018_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2018_2022_merged_neutral.sfs -fstout yft_2018_2022_merged_neutral
 
-qsub sfs_yft_2018_2022_folded
+qsub sfs_yft_2018_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2018_2022_folded.fst.idx
+realSFS fst stats yft_2018_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:176840]:-0.005929 Fst.Weight:0.027014
+FST.Unweight[nObs:99755]:0.000415 Fst.Weight:0.072277
 
 # Writing down 2d-SFS priors - 2019 & 2020
->sfs_yft_2019_2020_folded
-nano sfs_yft_2019_2020_folded
+>sfs_yft_2019_2020_merged_neutral
+nano sfs_yft_2019_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2019_2020_folded # job name, anything you want
+#$ -N sfs_yft_2019_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2019_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2019_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2019_allsites.saf.idx yft_2020_allsites.saf.idx -fold 1 -P 1 > yft_2019_2020_folded.sfs ; realSFS fst index yft_2019_allsites.saf.idx yft_2020_allsites.saf.idx -sfs yft_2019_2020_folded.sfs -fstout yft_2019_2020_folded
+realSFS yft_2019_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_2019_2020_merged_neutral.sfs ; realSFS fst index yft_2019_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_2019_2020_merged_neutral.sfs -fstout yft_2019_2020_merged_neutral
 
-qsub sfs_yft_2019_2020_folded
+qsub sfs_yft_2019_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2019_2020_folded.fst.idx
+realSFS fst stats yft_2019_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:130072]:0.149668 Fst.Weight:0.151990
+FST.Unweight[nObs:98493]:0.109358 Fst.Weight:0.130806
 
 # Writing down 2d-SFS priors - 2019 & 2022
->sfs_yft_2019_2022_folded
-nano sfs_yft_2019_2022_folded
+>sfs_yft_2019_2022_merged_neutral
+nano sfs_yft_2019_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2019_2022_folded # job name, anything you want
+#$ -N sfs_yft_2019_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2019_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2019_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2019_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2019_2022_folded.sfs ; realSFS fst index yft_2019_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2019_2022_folded.sfs -fstout yft_2019_2022_folded
+realSFS yft_2019_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2019_2022_merged_neutral.sfs ; realSFS fst index yft_2019_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2019_2022_merged_neutral.sfs -fstout yft_2019_2022_merged_neutral
 
-qsub sfs_yft_2019_2022_folded
+qsub sfs_yft_2019_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2019_2022_folded.fst.idx
+realSFS fst stats yft_2019_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:146849]:0.614016 Fst.Weight:0.166818
+FST.Unweight[nObs:99574]:0.606946 Fst.Weight:0.189460
 
 # Writing down 2d-SFS priors - 2020 & 2022
->sfs_yft_2020_2022_folded
-nano sfs_yft_2020_2022_folded
+>sfs_yft_2020_2022_merged_neutral
+nano sfs_yft_2020_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_yft_2020_2022_folded # job name, anything you want
+#$ -N sfs_yft_2020_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_yft_2020_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_yft_2020_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS yft_2020_allsites.saf.idx yft_2022_allsites.saf.idx -fold 1 -P 1 > yft_2020_2022_folded.sfs ; realSFS fst index yft_2020_allsites.saf.idx yft_2022_allsites.saf.idx -sfs yft_2020_2022_folded.sfs -fstout yft_2020_2022_folded
+realSFS yft_2020_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -fold 1 -P 1 > yft_2020_2022_merged_neutral.sfs ; realSFS fst index yft_2020_merged_neutral.saf.idx yft_2022_merged_neutral.saf.idx -sfs yft_2020_2022_merged_neutral.sfs -fstout yft_2020_2022_merged_neutral
 
-qsub sfs_yft_2020_2022_folded
+qsub sfs_yft_2020_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats yft_2020_2022_folded.fst.idx
+realSFS fst stats yft_2020_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:163644]:-0.003206 Fst.Weight:0.041515
+FST.Unweight[nObs:103246]:-0.001726 Fst.Weight:0.034666
 
 #------------------------ Bigeye reference-based analysis of genetic divergence (FST) across years
 cd /projectnb/mullenl/jaskiel/2bRAD_fastq/Combined_2bRAD_analysis
 
 #Doing SAF/SFS work
 #2016 (11 individuals, so 80% is 9)
->sfs_bet_2016
-nano sfs_bet_2016
+>sfs_bet_2016_merged_neutral
+nano sfs_bet_2016_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016 # job name, anything you want
+#$ -N sfs_bet_2016_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2016 -GL 1 -P 1 -minInd 9 $TODO -out bet_2016_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2016 -GL 1 -P 1 -minInd 9 $TODO -out bet_2016_merged_neutral
 
-qsub sfs_bet_2016
+qsub sfs_bet_2016_merged_neutral
 
 #2017 (2 individuals, so set minind to 1)
->sfs_bet_2017
-nano sfs_bet_2017
+>sfs_bet_2017_merged_neutral
+nano sfs_bet_2017_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2017 # job name, anything you want
+#$ -N sfs_bet_2017_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2017.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2017_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2017 -GL 1 -P 1 -minInd 1 $TODO -out bet_2017_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2017 -GL 1 -P 1 -minInd 1 $TODO -out bet_2017_merged_neutral
 
-qsub sfs_bet_2017
+qsub sfs_bet_2017_merged_neutral
 
 #2018 (11 individuals, so set minind to 9)
->sfs_bet_2018
-nano sfs_bet_2018
+>sfs_bet_2018_merged_neutral
+nano sfs_bet_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2018 # job name, anything you want
+#$ -N sfs_bet_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2018.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2018 -GL 1 -P 1 -minInd 9 $TODO -out bet_2018_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2018 -GL 1 -P 1 -minInd 9 $TODO -out bet_2018_merged_neutral
 
-qsub sfs_bet_2018
+qsub sfs_bet_2018_merged_neutral
 
 #2019 (1 individual, so set minind to 0)
->sfs_bet_2019
-nano sfs_bet_2019
+>sfs_bet_2019_merged_neutral
+nano sfs_bet_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2019 # job name, anything you want
+#$ -N sfs_bet_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2019.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2019 -GL 1 -P 1 -minInd 0 $TODO -out bet_2019_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2019 -GL 1 -P 1 -minInd 0 $TODO -out bet_2019_merged_neutral
 
-qsub sfs_bet_2019
+qsub sfs_bet_2019_merged_neutral
 
 #2020 (24 individuals, so set minind to 19)
->sfs_bet_2020
-nano sfs_bet_2020
+>sfs_bet_2020_merged_neutral
+nano sfs_bet_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2020 # job name, anything you want
+#$ -N sfs_bet_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2020.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2020 -GL 1 -P 1 -minInd 19 $TODO -out bet_2020_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2020 -GL 1 -P 1 -minInd 19 $TODO -out bet_2020_merged_neutral
 
-qsub sfs_bet_2020
+qsub sfs_bet_2020_merged_neutral
 
 #2022 (8 individuals, so set minind to 6)
->sfs_bet_2022
-nano sfs_bet_2022
+>sfs_bet_2022_merged_neutral
+nano sfs_bet_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2022 # job name, anything you want
+#$ -N sfs_bet_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2022.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
 export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
 TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
-angsd -sites finalsites_0.2_unlinked -b bams_bet_2022 -GL 1 -P 1 -minInd 6 $TODO -out bet_2022_allsites
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_2022 -GL 1 -P 1 -minInd 6 $TODO -out bet_2022_merged_neutral
 
-qsub sfs_bet_2022
+qsub sfs_bet_2022_merged_neutral
 
 # Writing down 2d-SFS priors - 2016 & 2017
->sfs_bet_2016_2017_folded
-nano sfs_bet_2016_2017_folded
+>sfs_bet_2016_2017_merged_neutral
+nano sfs_bet_2016_2017_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016_2017_folded # job name, anything you want
+#$ -N sfs_bet_2016_2017_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016_2017_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_2017_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2016_allsites.saf.idx bet_2017_allsites.saf.idx -fold 1 -P 1 > bet_2016_2017_folded.sfs ; realSFS fst index bet_2016_allsites.saf.idx bet_2017_allsites.saf.idx -sfs bet_2016_2017_folded.sfs -fstout bet_2016_2017_folded
+realSFS bet_2016_merged_neutral.saf.idx bet_2017_merged_neutral.saf.idx -fold 1 -P 1 > bet_2016_2017_merged_neutral.sfs ; realSFS fst index bet_2016_merged_neutral.saf.idx bet_2017_merged_neutral.saf.idx -sfs bet_2016_2017_merged_neutral.sfs -fstout bet_2016_2017_merged_neutral
 
-qsub sfs_bet_2016_2017_folded
+qsub sfs_bet_2016_2017_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2016_2017_folded.fst.idx
+realSFS fst stats bet_2016_2017_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:125299]:0.004122 Fst.Weight:0.040404
+FST.Unweight[nObs:98797]:-0.010424 Fst.Weight:0.061151
 
 # The difference between unweighted and weighted values is averaging versus ratio of sums method. 
 # The weighted value is derived from the ratio of the separate per-locus sums of numerator and denominator values, 
 # while the unweighted value is the average of per-locus values. [If that is unclear: weighted is sum(a)/sum(a+b), while unweighted is average(a/(a+b))].
 
 # Writing down 2d-SFS priors - 2016 & 2018
->sfs_bet_2016_2018_folded
-nano sfs_bet_2016_2018_folded
+>sfs_bet_2016_2018_merged_neutral
+nano sfs_bet_2016_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016_2018_folded # job name, anything you want
+#$ -N sfs_bet_2016_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2016_allsites.saf.idx bet_2018_allsites.saf.idx -fold 1 -P 1 > bet_2016_2018_folded.sfs ; realSFS fst index bet_2016_allsites.saf.idx bet_2018_allsites.saf.idx -sfs bet_2016_2018_folded.sfs -fstout bet_2016_2018_folded
+realSFS bet_2016_merged_neutral.saf.idx bet_2018_merged_neutral.saf.idx -fold 1 -P 1 > bet_2016_2018_merged_neutral.sfs ; realSFS fst index bet_2016_merged_neutral.saf.idx bet_2018_merged_neutral.saf.idx -sfs bet_2016_2018_merged_neutral.sfs -fstout bet_2016_2018_merged_neutral
 
-qsub sfs_bet_2016_2018_folded
+qsub sfs_bet_2016_2018_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2016_2018_folded.fst.idx
+realSFS fst stats bet_2016_2018_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:125059]:0.024729 Fst.Weight:0.029838
+FST.Unweight[nObs:98057]:0.023600 Fst.Weight:0.022591
 
 # Writing down 2d-SFS priors - 2016 & 2019
->sfs_bet_2016_2019_folded
-nano sfs_bet_2016_2019_folded
+>sfs_bet_2016_2019_merged_neutral
+nano sfs_bet_2016_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016_2019_folded # job name, anything you want
+#$ -N sfs_bet_2016_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2016_allsites.saf.idx bet_2019_allsites.saf.idx -fold 1 -P 1 > bet_2016_2019_folded.sfs ; realSFS fst index bet_2016_allsites.saf.idx bet_2019_allsites.saf.idx -sfs bet_2016_2019_folded.sfs -fstout bet_2016_2019_folded
+realSFS bet_2016_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -fold 1 -P 1 > bet_2016_2019_merged_neutral.sfs ; realSFS fst index bet_2016_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -sfs bet_2016_2019_merged_neutral.sfs -fstout bet_2016_2019_merged_neutral
 
-qsub sfs_bet_2016_2019_folded
+qsub sfs_bet_2016_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2016_2019_folded.fst.idx
+realSFS fst stats bet_2016_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:76765]:0.264153 Fst.Weight:0.150908
+FST.Unweight[nObs:93684]:0.126123 Fst.Weight:0.157868
 
 # Writing down 2d-SFS priors - 2016 & 2020
->sfs_bet_2016_2020_folded
-nano sfs_bet_2016_2020_folded
+>sfs_bet_2016_2020_merged_neutral
+nano sfs_bet_2016_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016_2020_folded # job name, anything you want
+#$ -N sfs_bet_2016_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2016_allsites.saf.idx bet_2020_allsites.saf.idx -fold 1 -P 1 > bet_2016_2020_folded.sfs ; realSFS fst index bet_2016_allsites.saf.idx bet_2020_allsites.saf.idx -sfs bet_2016_2020_folded.sfs -fstout bet_2016_2020_folded
+realSFS bet_2016_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -fold 1 -P 1 > bet_2016_2020_merged_neutral.sfs ; realSFS fst index bet_2016_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -sfs bet_2016_2020_merged_neutral.sfs -fstout bet_2016_2020_merged_neutral
 
-qsub sfs_bet_2016_2020_folded
+qsub sfs_bet_2016_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2016_2020_folded.fst.idx
+realSFS fst stats bet_2016_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:114839]:0.022249 Fst.Weight:0.019879
+FST.Unweight[nObs:96858]:0.021080 Fst.Weight:0.019450
 
 # Writing down 2d-SFS priors - 2016 & 2022
->sfs_bet_2016_2022_folded
-nano sfs_bet_2016_2022_folded
+>sfs_bet_2016_2022_merged_neutral
+nano sfs_bet_2016_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2016_2022_folded # job name, anything you want
+#$ -N sfs_bet_2016_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2016_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2016_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2016_allsites.saf.idx bet_2022_allsites.saf.idx -fold 1 -P 1 > bet_2016_2022_folded.sfs ; realSFS fst index bet_2016_allsites.saf.idx bet_2022_allsites.saf.idx -sfs bet_2016_2022_folded.sfs -fstout bet_2016_2022_folded
+realSFS bet_2016_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -fold 1 -P 1 > bet_2016_2022_merged_neutral.sfs ; realSFS fst index bet_2016_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -sfs bet_2016_2022_merged_neutral.sfs -fstout bet_2016_2022_merged_neutral
 
-qsub sfs_bet_2016_2022_folded
+qsub sfs_bet_2016_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2016_2022_folded.fst.idx
+realSFS fst stats bet_2016_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:125486]:0.016778 Fst.Weight:0.034432
+FST.Unweight[nObs:98192]:0.017628 Fst.Weight:0.038353
 
 # Writing down 2d-SFS priors - 2017 & 2018
->sfs_bet_2017_2018_folded
-nano sfs_bet_2017_2018_folded
+>sfs_bet_2017_2018_merged_neutral
+nano sfs_bet_2017_2018_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2017_2018_folded # job name, anything you want
+#$ -N sfs_bet_2017_2018_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2017_2018_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2017_2018_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2017_allsites.saf.idx bet_2018_allsites.saf.idx -fold 1 -P 1 > bet_2017_2018_folded.sfs ; realSFS fst index bet_2017_allsites.saf.idx bet_2018_allsites.saf.idx -sfs bet_2017_2018_folded.sfs -fstout bet_2017_2018_folded
+realSFS bet_2017_merged_neutral.saf.idx bet_2018_merged_neutral.saf.idx -fold 1 -P 1 > bet_2017_2018_merged_neutral.sfs ; realSFS fst index bet_2017_merged_neutral.saf.idx bet_2018_merged_neutral.saf.idx -sfs bet_2017_2018_merged_neutral.sfs -fstout bet_2017_2018_merged_neutral
 
-qsub sfs_bet_2017_2018_folded
+qsub sfs_bet_2017_2018_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2017_2018_folded.fst.idx
+realSFS fst stats bet_2017_2018_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:187362]:0.114589 Fst.Weight:0.064906
+FST.Unweight[nObs:104686]:0.045416 Fst.Weight:0.078828
 
 # Writing down 2d-SFS priors - 2017 & 2019
->sfs_bet_2017_2019_folded
-nano sfs_bet_2017_2019_folded
+>sfs_bet_2017_2019_merged_neutral
+nano sfs_bet_2017_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2017_2019_folded # job name, anything you want
+#$ -N sfs_bet_2017_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2017_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2017_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2017_allsites.saf.idx bet_2019_allsites.saf.idx -fold 1 -P 1 > bet_2017_2019_folded.sfs ; realSFS fst index bet_2017_allsites.saf.idx bet_2019_allsites.saf.idx -sfs bet_2017_2019_folded.sfs -fstout bet_2017_2019_folded
+realSFS bet_2017_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -fold 1 -P 1 > bet_2017_2019_merged_neutral.sfs ; realSFS fst index bet_2017_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -sfs bet_2017_2019_merged_neutral.sfs -fstout bet_2017_2019_merged_neutral
 
-qsub sfs_bet_2017_2019_folded
+qsub sfs_bet_2017_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2017_2019_folded.fst.idx
+realSFS fst stats bet_2017_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:99207]:0.387889 Fst.Weight:0.161291
+FST.Unweight[nObs:98039]:0.386715 Fst.Weight:0.211814
 
 # Writing down 2d-SFS priors - 2017 & 2020
->sfs_bet_2017_2020_folded
-nano sfs_bet_2017_2020_folded
+>sfs_bet_2017_2020_merged_neutral
+nano sfs_bet_2017_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2017_2020_folded # job name, anything you want
+#$ -N sfs_bet_2017_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2017_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2017_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2017_allsites.saf.idx bet_2020_allsites.saf.idx -fold 1 -P 1 > bet_2017_2020_folded.sfs ; realSFS fst index bet_2017_allsites.saf.idx bet_2020_allsites.saf.idx -sfs bet_2017_2020_folded.sfs -fstout bet_2017_2020_folded
+realSFS bet_2017_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -fold 1 -P 1 > bet_2017_2020_merged_neutral.sfs ; realSFS fst index bet_2017_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -sfs bet_2017_2020_merged_neutral.sfs -fstout bet_2017_2020_merged_neutral
 
-qsub sfs_bet_2017_2020_folded
+qsub sfs_bet_2017_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2017_2020_folded.fst.idx
+realSFS fst stats bet_2017_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:158357]:0.029329 Fst.Weight:0.054311
+FST.Unweight[nObs:102937]:-0.005643 Fst.Weight:0.073877
 
 # Writing down 2d-SFS priors - 2017 & 2022
->sfs_bet_2017_2022_folded
-nano sfs_bet_2017_2022_folded
+>sfs_bet_2017_2022_merged_neutral
+nano sfs_bet_2017_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2017_2022_folded # job name, anything you want
+#$ -N sfs_bet_2017_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2017_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2017_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2017_allsites.saf.idx bet_2022_allsites.saf.idx -fold 1 -P 1 > bet_2017_2022_folded.sfs ; realSFS fst index bet_2017_allsites.saf.idx bet_2022_allsites.saf.idx -sfs bet_2017_2022_folded.sfs -fstout bet_2017_2022_folded
+realSFS bet_2017_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -fold 1 -P 1 > bet_2017_2022_merged_neutral.sfs ; realSFS fst index bet_2017_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -sfs bet_2017_2022_merged_neutral.sfs -fstout bet_2017_2022_merged_neutral
 
-qsub sfs_bet_2017_2022_folded
+qsub sfs_bet_2017_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2017_2022_folded.fst.idx
+realSFS fst stats bet_2017_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:192571]:0.297699 Fst.Weight:0.087521
+FST.Unweight[nObs:104976]:0.300577 Fst.Weight:0.105598
 
 # Writing down 2d-SFS priors - 2018 & 2019
->sfs_bet_2018_2019_folded
-nano sfs_bet_2018_2019_folded
+>sfs_bet_2018_2019_merged_neutral
+nano sfs_bet_2018_2019_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2018_2019_folded # job name, anything you want
+#$ -N sfs_bet_2018_2019_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2018_2019_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2018_2019_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2018_allsites.saf.idx bet_2019_allsites.saf.idx -fold 1 -P 1 > bet_2018_2019_folded.sfs ; realSFS fst index bet_2018_allsites.saf.idx bet_2019_allsites.saf.idx -sfs bet_2018_2019_folded.sfs -fstout bet_2018_2019_folded
+realSFS bet_2018_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -fold 1 -P 1 > bet_2018_2019_merged_neutral.sfs ; realSFS fst index bet_2018_merged_neutral.saf.idx bet_2019_merged_neutral.saf.idx -sfs bet_2018_2019_merged_neutral.sfs -fstout bet_2018_2019_merged_neutral
 
-qsub sfs_bet_2018_2019_folded
+qsub sfs_bet_2018_2019_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2018_2019_folded.fst.idx
+realSFS fst stats bet_2018_2019_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:97978]:0.539353 Fst.Weight:0.188026
+FST.Unweight[nObs:96928]:0.362844 Fst.Weight:0.196647
 
 # Writing down 2d-SFS priors - 2018 & 2020
->sfs_bet_2018_2020_folded
-nano sfs_bet_2018_2020_folded
+>sfs_bet_2018_2020_merged_neutral
+nano sfs_bet_2018_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2018_2020_folded # job name, anything you want
+#$ -N sfs_bet_2018_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2018_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2018_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2018_allsites.saf.idx bet_2020_allsites.saf.idx -fold 1 -P 1 > bet_2018_2020_folded.sfs ; realSFS fst index bet_2018_allsites.saf.idx bet_2020_allsites.saf.idx -sfs bet_2018_2020_folded.sfs -fstout bet_2018_2020_folded
+realSFS bet_2018_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -fold 1 -P 1 > bet_2018_2020_merged_neutral.sfs ; realSFS fst index bet_2018_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -sfs bet_2018_2020_merged_neutral.sfs -fstout bet_2018_2020_merged_neutral
 
-qsub sfs_bet_2018_2020_folded
+qsub sfs_bet_2018_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2018_2020_folded.fst.idx
+realSFS fst stats bet_2018_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:157603]:0.010034 Fst.Weight:0.024526
+FST.Unweight[nObs:102463]:0.011152 Fst.Weight:0.021051
 
 # Writing down 2d-SFS priors - 2018 & 2022
->sfs_bet_2018_2022_folded
-nano sfs_bet_2018_2022_folded
+>sfs_bet_2018_2022_merged_neutral
+nano sfs_bet_2018_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2018_2022_folded # job name, anything you want
+#$ -N sfs_bet_2018_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2018_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2018_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2018_allsites.saf.idx bet_2022_allsites.saf.idx -fold 1 -P 1 > bet_2018_2022_folded.sfs ; realSFS fst index bet_2018_allsites.saf.idx bet_2022_allsites.saf.idx -sfs bet_2018_2022_folded.sfs -fstout bet_2018_2022_folded
+realSFS bet_2018_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -fold 1 -P 1 > bet_2018_2022_merged_neutral.sfs ; realSFS fst index bet_2018_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -sfs bet_2018_2022_merged_neutral.sfs -fstout bet_2018_2022_merged_neutral
 
-qsub sfs_bet_2018_2022_folded
+qsub sfs_bet_2018_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2018_2022_folded.fst.idx
+realSFS fst stats bet_2018_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:187698]:0.017754 Fst.Weight:0.020209
+FST.Unweight[nObs:104295]:0.017616 Fst.Weight:0.030701
 
 # Writing down 2d-SFS priors - 2019 & 2020
->sfs_bet_2019_2020_folded
-nano sfs_bet_2019_2020_folded
+>sfs_bet_2019_2020_merged_neutral
+nano sfs_bet_2019_2020_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2019_2020_folded # job name, anything you want
+#$ -N sfs_bet_2019_2020_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2019_2020_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2019_2020_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2019_allsites.saf.idx bet_2020_allsites.saf.idx -fold 1 -P 1 > bet_2019_2020_folded.sfs ; realSFS fst index bet_2019_allsites.saf.idx bet_2020_allsites.saf.idx -sfs bet_2019_2020_folded.sfs -fstout bet_2019_2020_folded
+realSFS bet_2019_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -fold 1 -P 1 > bet_2019_2020_merged_neutral.sfs ; realSFS fst index bet_2019_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -sfs bet_2019_2020_merged_neutral.sfs -fstout bet_2019_2020_merged_neutral
 
-qsub sfs_bet_2019_2020_folded
+qsub sfs_bet_2019_2020_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2019_2020_folded.fst.idx
+realSFS fst stats bet_2019_2020_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:87791]:0.360742 Fst.Weight:0.202636
+FST.Unweight[nObs:95607]:0.149189 Fst.Weight:0.180572
 
 # Writing down 2d-SFS priors - 2019 & 2022
->sfs_bet_2019_2022_folded
-nano sfs_bet_2019_2022_folded
+>sfs_bet_2019_2022_merged_neutral
+nano sfs_bet_2019_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2019_2022_folded # job name, anything you want
+#$ -N sfs_bet_2019_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2019_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2019_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2019_allsites.saf.idx bet_2022_allsites.saf.idx -fold 1 -P 1 > bet_2019_2022_folded.sfs ; realSFS fst index bet_2019_allsites.saf.idx bet_2022_allsites.saf.idx -sfs bet_2019_2022_folded.sfs -fstout bet_2019_2022_folded
+realSFS bet_2019_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -fold 1 -P 1 > bet_2019_2022_merged_neutral.sfs ; realSFS fst index bet_2019_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -sfs bet_2019_2022_merged_neutral.sfs -fstout bet_2019_2022_merged_neutral
 
-qsub sfs_bet_2019_2022_folded
+qsub sfs_bet_2019_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2019_2022_folded.fst.idx
+realSFS fst stats bet_2019_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:99204]:0.710508 Fst.Weight:0.222207
+FST.Unweight[nObs:97052]:0.652963 Fst.Weight:0.224265
 
 # Writing down 2d-SFS priors - 2020 & 2022
->sfs_bet_2020_2022_folded
-nano sfs_bet_2020_2022_folded
+>sfs_bet_2020_2022_merged_neutral
+nano sfs_bet_2020_2022_merged_neutral
 #!/bin/bash -l
 #$ -V # inherit the submission environment
 #$ -cwd # start job in submission directory
-#$ -N sfs_bet_2020_2022_folded # job name, anything you want
+#$ -N sfs_bet_2020_2022_merged_neutral # job name, anything you want
 #$ -l h_rt=12:00:00 #maximum run time
 #$ -M jaskielj@bu.edu #your email
 #$ -m bea
 #$ -pe omp 1
 #$ -j y # Join standard output and error to a single file
-#$ -o sfs_bet_2020_2022_folded.qlog # Name the file where to redirect standard output and error
+#$ -o sfs_bet_2020_2022_merged_neutral.qlog # Name the file where to redirect standard output and error
 module load angsd
-realSFS bet_2020_allsites.saf.idx bet_2022_allsites.saf.idx -fold 1 -P 1 > bet_2020_2022_folded.sfs ; realSFS fst index bet_2020_allsites.saf.idx bet_2022_allsites.saf.idx -sfs bet_2020_2022_folded.sfs -fstout bet_2020_2022_folded
+realSFS bet_2020_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -fold 1 -P 1 > bet_2020_2022_merged_neutral.sfs ; realSFS fst index bet_2020_merged_neutral.saf.idx bet_2022_merged_neutral.saf.idx -sfs bet_2020_2022_merged_neutral.sfs -fstout bet_2020_2022_merged_neutral
 
-qsub sfs_bet_2020_2022_folded
+qsub sfs_bet_2020_2022_merged_neutral
 
 # Global Fst between populations 
-realSFS fst stats bet_2020_2022_folded.fst.idx
+realSFS fst stats bet_2020_2022_merged_neutral.fst.idx
 # Output:
-FST.Unweight[nObs:158587]:-0.001031 Fst.Weight:0.044656
+FST.Unweight[nObs:102790]:0.002733 Fst.Weight:0.030966
+
+#------------------------------ PW Fst between adults and larvae ---------------------------
+#Yellowfin
+#Larvae (67 so 80% is 54)
+>sfs_yft_larvae_merged_neutral
+nano sfs_yft_larvae_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_yft_larvae_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_larvae_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_larvae -GL 1 -P 1 -minInd 54 $TODO -out yft_larvae_merged_neutral
+
+qsub sfs_yft_larvae_merged_neutral
+
+#For adults, you can just use yft_2020_merged_neutral.saf.idx because those are the only adults and you produced this already
+
+#Fst adults vs larvae
+>sfs_yft_adults_v_larvae_merged_neutral
+nano sfs_yft_adults_v_larvae_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_yft_adults_v_larvae_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_adults_v_larvae_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+realSFS yft_larvae_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -fold 1 -P 1 > yft_adults_v_larvae_merged_neutral.sfs ; realSFS fst index yft_larvae_merged_neutral.saf.idx yft_2020_merged_neutral.saf.idx -sfs yft_adults_v_larvae_merged_neutral.sfs -fstout yft_adults_v_larvae_merged_neutral
+
+qsub sfs_yft_adults_v_larvae_merged_neutral
+
+# Global Fst between populations 
+realSFS fst stats yft_adults_v_larvae_merged_neutral.fst.idx
+
+output:
+FST.Unweight[nObs:99418]:0.009726 Fst.Weight:0.033441
+
+#Bigeye
+#Larvae (33 so 80% is 26)
+>sfs_bet_larvae_merged_neutral
+nano sfs_bet_larvae_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_bet_larvae_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_bet_larvae_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged_larvae -GL 1 -P 1 -minInd 26 $TODO -out bet_larvae_merged_neutral
+
+qsub sfs_bet_larvae_merged_neutral
+
+#For adults, you can just use bet_2020_merged_neutral.saf.idx because those are the only adults and you produced this already
+
+#Fst adults vs larvae
+>sfs_bet_adults_v_larvae_merged_neutral
+nano sfs_bet_adults_v_larvae_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_bet_adults_v_larvae_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_bet_adults_v_larvae_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+realSFS bet_larvae_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -fold 1 -P 1 > bet_adults_v_larvae_merged_neutral.sfs ; realSFS fst index bet_larvae_merged_neutral.saf.idx bet_2020_merged_neutral.saf.idx -sfs bet_adults_v_larvae_merged_neutral.sfs -fstout bet_adults_v_larvae_merged_neutral
+
+qsub sfs_bet_adults_v_larvae_merged_neutral
+
+# Global Fst between populations 
+realSFS fst stats bet_adults_v_larvae_merged_neutral.fst.idx
+
+output:
+FST.Unweight[nObs:102340]:0.010534 Fst.Weight:0.012001
+
+#-------------------------- PW Fst between main yft pop and subpop -----------------------
+
+#Main pop (79 so 80% is 63)
+>sfs_yft_main_merged_neutral
+nano sfs_yft_main_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_yft_main_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_main_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_main -GL 1 -P 1 -minInd 63 $TODO -out yft_main_merged_neutral
+
+qsub sfs_yft_main_merged_neutral
+
+#Subpop (17 so 80% is 14)
+>sfs_yft_subpop_merged_neutral
+nano sfs_yft_subpop_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the subpopmission environment
+#$ -cwd # start job in subpopmission directory
+#$ -N sfs_yft_subpop_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_subpop_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged_subpop -GL 1 -P 1 -minInd 14 $TODO -out yft_subpop_merged_neutral
+
+qsub sfs_yft_subpop_merged_neutral
+
+#Fst main pop vs subpop
+>sfs_yft_main_v_subpop_merged_neutral
+nano sfs_yft_main_v_subpop_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_yft_main_v_subpop_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_main_v_subpop_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+realSFS yft_main_merged_neutral.saf.idx yft_subpop_merged_neutral.saf.idx -fold 1 -P 1 > yft_main_v_subpop_merged_neutral.sfs ; realSFS fst index yft_main_merged_neutral.saf.idx yft_subpop_merged_neutral.saf.idx -sfs yft_main_v_subpop_merged_neutral.sfs -fstout yft_main_v_subpop_merged_neutral
+
+qsub sfs_yft_main_v_subpop_merged_neutral
+
+# Global Fst between populations 
+realSFS fst stats yft_main_v_subpop_merged_neutral.fst.idx
+
+output:
+FST.Unweight[nObs:91984]:0.057886 Fst.Weight:0.390871
 
 #------------------------------------------ Tajima's D ------------------------------------------
 ##ANGSD EXAMPLE
@@ -2774,47 +4208,150 @@ module list
 #Step 1: Finding a 'global estimate' of the SFS
 #First estimate the site allele frequency likelihood
 ./angsd -bam bam.filelist -doSaf 1 -anc chimpHg19.fa -GL 1 -P 24 -out out
-
 #Obtain the maximum likelihood estimate of the SFS using the realSFS program found in the misc subfolder
 ./misc/realSFS out.saf.idx -P 24 > out.sfs
-
-#You did this when you were calculating SAF and SFS for each pop group (use filters that don't alter allele frequency for this)
-realSFS skj_dem.saf.idx -fold 1 > skj_dem_folded.sfs
-realSFS yft_dem.saf.idx -fold 1 > yft_dem_folded.sfs
-realSFS bet_dem.saf.idx -fold 1 > bet_dem_folded.sfs
-
 #Step 2: Calculate the thetas for each site
 realSFS saf2theta out.saf.idx -sfs out.sfs -outname out
-
-#For yours:
-realSFS saf2theta skj_dem.saf.idx -sfs skj_dem_folded.sfs -outname skj_theta_noLD_fold -fold 1
-realSFS saf2theta yft_dem.saf.idx -sfs yft_dem_folded.sfs -outname yft_theta_noLD_fold -fold 1
-realSFS saf2theta bet_dem.saf.idx -sfs bet_dem_folded.sfs -outname bet_theta_noLD_fold -fold 1
-
 #The output from the above command are two files out.thetas.gz and out.thetas.idx. A formal description of these files can be found in the doc/formats.pdf in the angsd package. It is possible to extract the logscale persite thetas using the ./thetaStat print program.
 thetaStat print out.thetas.idx 2>/dev/null |head
-
-#Mine:
-thetaStat print skj_theta_noLD_fold.thetas.idx 2>/dev/null |head
-thetaStat print yft_theta_noLD_fold.thetas.idx 2>/dev/null |head 
-thetaStat print bet_theta_noLD_fold.thetas.idx 2>/dev/null |head
-
 #Step 3a: Estimate Tajimas D and other statistics
 #calculate Tajimas D
 ./misc/thetaStat do_stat out.thetas.idx
 
-#For mine:
+#After filtering for LD
+#Skipjack (195 individuals, so 80% is 156)
+>sfs_skj_dem_merged_norel
+nano sfs_skj_dem_merged_norel
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_skj_dem_merged_norel # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_skj_dem_merged_norel.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites finalsites_skj_unlinked -b bams_skj_merged_norel -GL 1 -P 1 -minInd 156 $TODO -out skj_dem_merged_norel
+
+qsub sfs_skj_dem_merged_norel
+
+#Yellowfin (neutral)
+>sfs_yft_dem_merged_neutral
+nano sfs_yft_dem_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_yft_dem_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_yft_dem_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_yft_unlinked -b bams_yft_merged -GL 1 -P 1 -minInd 77 $TODO -out yft_dem_merged_neutral
+
+qsub sfs_yft_dem_merged_neutral
+
+#Bigeye
+>sfs_bet_dem_merged_neutral
+nano sfs_bet_dem_merged_neutral
+#!/bin/bash -l
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N sfs_bet_dem_merged_neutral # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M jaskielj@bu.edu #your email
+#$ -m bea
+#$ -pe omp 1
+#$ -j y # Join standard output and error to a single file
+#$ -o sfs_bet_dem_merged_neutral.qlog # Name the file where to redirect standard output and error
+module load angsd
+export GENOME_REF=GCF_914725855.1_fThuAlb1.1_genomic.fasta
+TODO="-doSaf 1 -doMajorMinor 1 -doMaf 1 -doPost 1 -anc $GENOME_REF -ref $GENOME_REF"
+angsd -sites neutral_sites_bet_unlinked -b bams_bet_merged -GL 1 -P 1 -minInd 46 $TODO -out bet_dem_merged_neutral
+
+qsub sfs_bet_dem_merged_neutral
+
+##Obtain the maximum likelihood estimate of the SFS using the realSFS program found in the misc subfolder
+#Ran this code to make sfs files already, no need to rerun 
+realSFS skj_dem_merged_norel.saf.idx -fold 1 >skj_dem_merged_norel_folded.sfs #28449
+realSFS yft_dem_merged_neutral.saf.idx -fold 1 >yft_dem_merged_folded_neutral.sfs #
+realSFS bet_dem_merged_neutral.saf.idx -fold 1 >bet_dem_merged_folded_neutral.sfs #
+
+#Step 2: Calculate the thetas for each site
+realSFS saf2theta skj_dem_merged_norel.saf.idx -sfs skj_dem_merged_norel_folded.sfs -outname skj_theta_noLD_fold_merged_norel -fold 1
+realSFS saf2theta yft_dem_merged_neutral.saf.idx -sfs yft_dem_merged_folded_neutral.sfs -outname yft_theta_noLD_fold_merged_neutral -fold 1
+realSFS saf2theta bet_dem_merged_neutral.saf.idx -sfs bet_dem_merged_folded_neutral.sfs -outname bet_theta_noLD_fold_merged_neutral -fold 1
+
+#The output from the above command are two files out.thetas.gz and out.thetas.idx. A formal description of these files can be found in the doc/formats.pdf in the angsd package. It is possible to extract the logscale persite thetas using the ./thetaStat print program.
+thetaStat print skj_theta_noLD_fold_merged_norel.thetas.idx 2>/dev/null |head
+thetaStat print yft_theta_noLD_fold_merged_neutral.thetas.idx 2>/dev/null |head 
+thetaStat print bet_theta_noLD_fold_merged_neutral.thetas.idx 2>/dev/null |head
+
+#Step 3a: Estimate Tajimas D and other statistics
+#calculate Tajimas D
+
 #skj 
-thetaStat do_stat skj_theta_noLD_fold.thetas.idx
-cat skj_theta_noLD_fold.thetas.idx.pestPG
+thetaStat do_stat skj_theta_noLD_fold_merged_norel.thetas.idx
+cat skj_theta_noLD_fold_merged_norel.thetas.idx.pestPG
 
 #yft
-thetaStat do_stat yft_theta_noLD_fold.thetas.idx
-cat yft_theta_noLD_fold.thetas.idx.pestPG
+thetaStat do_stat yft_theta_noLD_fold_merged_neutral.thetas.idx
+cat yft_theta_noLD_fold_merged_neutral.thetas.idx.pestPG
 
 #bet
-thetaStat do_stat bet_theta_noLD_fold.thetas.idx
-cat bet_theta_noLD_fold.thetas.idx.pestPG
+thetaStat do_stat bet_theta_noLD_fold_merged_neutral.thetas.idx
+cat bet_theta_noLD_fold_merged_neutral.thetas.idx.pestPG
+
+
+#---Adults vs Larvae 
+
+#yft larvae and adults
+realSFS yft_larvae_merged_neutral.saf.idx -fold 1 >yft_larvae_merged_folded_neutral.sfs
+realSFS yft_2020_merged_neutral.saf.idx -fold 1 >yft_2020_merged_folded_neutral.sfs
+
+#bet larvae and adults
+realSFS bet_larvae_merged_neutral.saf.idx -fold 1 >bet_larvae_merged_folded_neutral.sfs
+realSFS bet_2020_merged_neutral.saf.idx -fold 1 >bet_2020_merged_folded_neutral.sfs
+
+#Calculate thetas
+realSFS saf2theta yft_larvae_merged_neutral.saf.idx -sfs yft_larvae_merged_folded_neutral.sfs -outname yft_larvae_merged_theta_fold_neutral -fold 1
+realSFS saf2theta yft_2020_merged_neutral.saf.idx -sfs yft_2020_merged_folded_neutral.sfs -outname yft_2020_merged_theta_fold_neutral -fold 1
+
+realSFS saf2theta bet_larvae_merged_neutral.saf.idx -sfs bet_larvae_merged_folded_neutral.sfs -outname bet_larvae_merged_theta_fold_neutral -fold 1
+realSFS saf2theta bet_2020_merged_neutral.saf.idx -sfs bet_2020_merged_folded_neutral.sfs -outname bet_2020_merged_theta_fold_neutral -fold 1
+
+#Calculate stats
+thetaStat do_stat yft_larvae_merged_theta_fold_neutral.thetas.idx
+cat yft_larvae_merged_theta_fold_neutral.thetas.idx.pestPG
+
+thetaStat do_stat yft_2020_merged_theta_fold_neutral.thetas.idx
+cat yft_2020_merged_theta_fold_neutral.thetas.idx.pestPG
+
+thetaStat do_stat bet_larvae_merged_theta_fold_neutral.thetas.idx
+cat bet_larvae_merged_theta_fold_neutral.thetas.idx.pestPG
+
+thetaStat do_stat bet_2020_merged_theta_fold_neutral.thetas.idx
+cat bet_2020_merged_theta_fold_neutral.thetas.idx.pestPG
+
+#---Main pop vs subpop
+realSFS yft_main_merged_neutral.saf.idx -fold 1 > yft_main_merged_folded_neutral.sfs
+realSFS yft_subpop_merged_neutral.saf.idx -fold 1 > yft_subpop_merged_folded_neutral.sfs
+
+#Calculate thetas
+realSFS saf2theta yft_main_merged_neutral.saf.idx -sfs yft_main_merged_folded_neutral.sfs -outname yft_main_merged_theta_fold_neutral -fold 1
+realSFS saf2theta yft_subpop_merged_neutral.saf.idx -sfs yft_subpop_merged_folded_neutral.sfs -outname yft_subpop_merged_theta_fold_neutral -fold 1
+
+#Stats
+thetaStat do_stat yft_main_merged_theta_fold_neutral.thetas.idx
+thetaStat do_stat yft_subpop_merged_theta_fold_neutral.thetas.idx
 
 #- Output in the ./thetaStat print thetas.idx are the log scaled per site estimates of the thetas
 #- Output in the pestPG file are the sum of the per site estimates for a region
@@ -2825,4 +4362,4 @@ cat bet_theta_noLD_fold.thetas.idx.pestPG
 #Most likely you are just interest in the wincenter (column 3) and the column 9 which is the Tajima's D statistic.
 #The first 3 columns relates to the region. The next 5 columns are 5 different estimators of theta, and the next 5 columns are neutrality test statistics. The final column is the number of sites with data in the region.
 
-#See R doc for plotting
+#See Jaskiel_2026_2bRAD_Final_Workflow.Rmd for plotting
